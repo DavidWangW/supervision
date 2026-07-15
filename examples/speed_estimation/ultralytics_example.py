@@ -5,8 +5,11 @@ import numpy as np
 from ultralytics import YOLO
 
 import supervision as sv
+# 3840×2160
+# SOURCE = np.array([[1252, 787], [2298, 803], [5039, 2159], [-550, 2159]])
 
-SOURCE = np.array([[1252, 787], [2298, 803], [5039, 2159], [-550, 2159]])
+# 1280×720
+SOURCE = np.array([[44, 32], [222, 16], [1272, 698], [197, 714]])
 
 TARGET_WIDTH = 25
 TARGET_HEIGHT = 250
@@ -52,7 +55,8 @@ def main(
         iou_threshold: IOU threshold for the model
     """
     video_info = sv.VideoInfo.from_video_path(video_path=source_video_path)
-    model = YOLO("yolo11x.pt")
+    # model = YOLO("yolo11x.pt")
+    model = YOLO("yolo26x.pt")
 
     byte_track = sv.ByteTrack(
         frame_rate=video_info.fps, track_activation_threshold=confidence_threshold
