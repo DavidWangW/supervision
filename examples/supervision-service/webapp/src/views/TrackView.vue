@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
 
-import { trackVideo } from '@/api/video'
+import { trackVideo, uploadPreview } from '@/api/video'
 import ProcessingState from '@/components/ProcessingState.vue'
 import ResultPanel from '@/components/ResultPanel.vue'
 import VideoDropzone from '@/components/VideoDropzone.vue'
@@ -9,6 +9,7 @@ import { useVideoFile } from '@/composables/useVideoFile'
 
 const { file, previewUrl, fileMeta, setFile, clear, revoke } = useVideoFile()
 
+const uploadId = ref('')
 const confidenceThreshold = ref(0.3)
 const iouThreshold = ref(0.7)
 const isProcessing = ref(false)
@@ -18,14 +19,26 @@ const progress = ref(0)
 const currentFrame = ref(0)
 const totalFrames = ref(0)
 
-function onSelect(selected: File) {
+async function onSelect(selected: File) {
   errorMessage.value = ''
   resultVideoUrl.value = ''
+  uploadId.value = ''
   setFile(selected)
+
+  try {
+    const preview = await uploadPreview(selected)
+    if (previewUrl.value.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl.value)
+    }
+    uploadId.value = preview.uploadId
+    previewUrl.value = preview.previewUrl
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '预览生成失败。'
+  }
 }
 
 async function submit() {
-  if (!file.value) {
+  if (!uploadId.value && !file.value) {
     errorMessage.value = '请先上传视频。'
     return
   }
@@ -39,7 +52,8 @@ async function submit() {
 
   try {
     const result = await trackVideo({
-      file: file.value,
+      uploadId: uploadId.value || undefined,
+      file: file.value ?? undefined,
       confidenceThreshold: confidenceThreshold.value,
       iouThreshold: iouThreshold.value,
       onProgress: (nextProgress, frame, total) => {
@@ -58,6 +72,7 @@ async function submit() {
 
 function resetAll() {
   clear()
+  uploadId.value = ''
   errorMessage.value = ''
   resultVideoUrl.value = ''
 }

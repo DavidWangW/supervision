@@ -54,6 +54,10 @@ export function uploadFileUrl(uploadId: string): string {
   return `/api/v1/records/uploads/${uploadId}/file`
 }
 
+export function uploadPreviewUrl(uploadId: string): string {
+  return `/api/v1/records/uploads/${uploadId}/preview`
+}
+
 export function jobResultUrl(jobId: string): string {
   return `/api/v1/records/jobs/${jobId}/file`
 }

@@ -9,7 +9,7 @@ from app.config import DEFAULT_CONFIDENCE, DEFAULT_IOU
 from app.db.repository import create_processing_job
 from app.schemas.records import JobCreatedResponse
 from app.services.job_runner import run_speed_job
-from app.services.upload_service import save_upload_file
+from app.services.upload_service import resolve_upload
 
 router = APIRouter(prefix="/api/v1/videos", tags=["speed"])
 
@@ -42,21 +42,19 @@ def _parse_source_points(raw_points: str) -> list[list[int]]:
 @router.post("/speed-estimate", response_model=JobCreatedResponse, status_code=202)
 def speed_estimate_video(
     background_tasks: BackgroundTasks,
-    file: Annotated[UploadFile, File(description="Input video file")],
     source_points: Annotated[
         str,
         Form(description='JSON array of four points, e.g. [{"x":1,"y":2}, ...]'),
     ],
     target_width: Annotated[float, Form(gt=0, description="Road width in meters")],
     target_height: Annotated[float, Form(gt=0, description="Road length in meters")],
+    file: Annotated[UploadFile | None, File(description="Input video file")] = None,
+    upload_id: Annotated[str | None, Form(description="Reuse a previous upload instead of uploading again")] = None,
     confidence_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_CONFIDENCE,
     iou_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_IOU,
 ) -> JobCreatedResponse:
     """Submit a speed estimation job and process it in the background."""
-    try:
-        upload_record = save_upload_file(file)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    upload_record = resolve_upload(file, upload_id)
 
     parsed_points = _parse_source_points(source_points)
     job = create_processing_job(

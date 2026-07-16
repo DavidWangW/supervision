@@ -3,10 +3,33 @@ const emit = defineEmits<{
   select: [file: File]
 }>()
 
+const VIDEO_EXTENSIONS = [
+  '.mp4',
+  '.mov',
+  '.avi',
+  '.mkv',
+  '.wmv',
+  '.flv',
+  '.webm',
+  '.m4v',
+  '.mpg',
+  '.mpeg',
+  '.3gp',
+  '.ts',
+]
+
+function isVideoFile(file: File): boolean {
+  if (file.type.startsWith('video/')) {
+    return true
+  }
+  const name = file.name.toLowerCase()
+  return VIDEO_EXTENSIONS.some((ext) => name.endsWith(ext))
+}
+
 function onChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  if (file) {
+  if (file && isVideoFile(file)) {
     emit('select', file)
   }
   input.value = ''
@@ -15,7 +38,7 @@ function onChange(event: Event) {
 function onDrop(event: DragEvent) {
   event.preventDefault()
   const file = event.dataTransfer?.files?.[0]
-  if (file && file.type.startsWith('video/')) {
+  if (file && isVideoFile(file)) {
     emit('select', file)
   }
 }

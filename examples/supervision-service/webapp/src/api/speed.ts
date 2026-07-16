@@ -1,4 +1,5 @@
 import { jobResultUrl, pollJobUntilComplete } from '@/api/jobs'
+import { uploadPreview } from '@/api/video'
 
 export interface SourcePoint {
   x: number
@@ -6,7 +7,8 @@ export interface SourcePoint {
 }
 
 export interface SpeedEstimateOptions {
-  file: File
+  file?: File
+  uploadId?: string
   sourcePoints: SourcePoint[]
   targetWidth: number
   targetHeight: number
@@ -21,8 +23,11 @@ export interface SpeedEstimateResult {
   resultUrl: string
 }
 
+export { uploadPreview }
+
 export async function estimateSpeed({
   file,
+  uploadId,
   sourcePoints,
   targetWidth,
   targetHeight,
@@ -32,7 +37,13 @@ export async function estimateSpeed({
   signal,
 }: SpeedEstimateOptions): Promise<SpeedEstimateResult> {
   const formData = new FormData()
-  formData.append('file', file)
+  if (uploadId) {
+    formData.append('upload_id', uploadId)
+  } else if (file) {
+    formData.append('file', file)
+  } else {
+    throw new Error('Either file or uploadId is required.')
+  }
   formData.append('source_points', JSON.stringify(sourcePoints))
   formData.append('target_width', String(targetWidth))
   formData.append('target_height', String(targetHeight))

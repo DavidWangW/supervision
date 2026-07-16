@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
+from app.config import EXTENSION_MIME_TYPES
 from app.db.repository import (
     get_processing_job,
     get_upload,
@@ -16,6 +17,8 @@ from app.schemas.records import (
     UploadListResponse,
     UploadResponse,
 )
+from app.services.upload_service import preview_path_for
+from app.services.video_encoding import build_browser_preview
 
 router = APIRouter(prefix="/api/v1/records", tags=["records"])
 
@@ -26,6 +29,15 @@ def _to_upload_response(record: object) -> UploadResponse:
 
 def _to_job_response(record: object) -> ProcessingJobResponse:
     return ProcessingJobResponse.model_validate(record.__dict__)
+
+
+def _download_mime_type(record: object) -> str:
+    """Pick a sensible MIME type from the stored value or file extension."""
+    content_type = getattr(record, "content_type", None)
+    if content_type and content_type != "application/octet-stream":
+        return content_type
+    suffix = Path(record.file_path).suffix.lower()
+    return EXTENSION_MIME_TYPES.get(suffix, "video/mp4")
 
 
 @router.get("/uploads", response_model=UploadListResponse)
@@ -59,8 +71,39 @@ def download_upload_file(upload_id: str) -> FileResponse:
 
     return FileResponse(
         path=file_path,
-        media_type=record.content_type or "video/mp4",
+        media_type=_download_mime_type(record),
         filename=record.original_filename,
+    )
+
+
+@router.get("/uploads/{upload_id}/preview")
+def preview_upload_file(upload_id: str) -> FileResponse:
+    """Stream a browser-playable preview of an uploaded video.
+
+    Uploaded files may use containers/codecs that HTML5 ``<video>`` cannot decode
+    (e.g. ``.avi``). This endpoint transcodes the original to an H.264 MP4 and
+    serves it, caching the result so subsequent requests skip re-encoding.
+
+    Args:
+        upload_id: Upload record identifier.
+
+    Returns:
+        A browser-playable MP4 preview.
+    """
+    record = get_upload(upload_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Upload record not found.")
+
+    source_path = Path(record.file_path)
+    if not source_path.is_file():
+        raise HTTPException(status_code=404, detail="Upload file not found on disk.")
+
+    preview_path = build_browser_preview(source_path, preview_path_for(upload_id))
+
+    return FileResponse(
+        path=preview_path,
+        media_type="video/mp4",
+        filename=f"{Path(record.original_filename).stem}_preview.mp4",
     )
 
 

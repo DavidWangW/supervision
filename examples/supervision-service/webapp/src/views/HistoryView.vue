@@ -6,6 +6,7 @@ import {
   fetchUploadRecords,
   jobResultUrl,
   uploadFileUrl,
+  uploadPreviewUrl,
 } from '@/api/records'
 import type { ProcessingJobRecord, UploadRecord } from '@/api/records'
 
@@ -174,7 +175,7 @@ onMounted(() => {
         </div>
 
         <div class="record-actions">
-          <button type="button" class="ghost" @click="showPreview(uploadFileUrl(upload.id))">
+          <button type="button" class="ghost" @click="showPreview(uploadPreviewUrl(upload.id))">
             预览
           </button>
           <a :href="uploadFileUrl(upload.id)" :download="upload.original_filename">下载原文件</a>

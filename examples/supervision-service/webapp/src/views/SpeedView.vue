@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
 
-import { estimateSpeed } from '@/api/speed'
+import { estimateSpeed, uploadPreview } from '@/api/speed'
 import type { SourcePoint } from '@/api/speed'
 import CalibrationCanvas from '@/components/CalibrationCanvas.vue'
 import ProcessingState from '@/components/ProcessingState.vue'
@@ -12,6 +12,8 @@ type Phase = 'upload' | 'calibrate' | 'processing' | 'result'
 
 const phase = ref<Phase>('upload')
 const selectedFile = ref<File | null>(null)
+const uploadId = ref('')
+const previewUrl = ref('')
 const frameUrl = ref('')
 const videoWidth = ref(0)
 const videoHeight = ref(0)
@@ -33,10 +35,9 @@ function revokeFrameUrl() {
   }
 }
 
-function captureFirstFrame(file: File): Promise<void> {
+function captureFirstFrame(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video')
-    const url = URL.createObjectURL(file)
     video.preload = 'metadata'
     video.src = url
     video.muted = true
@@ -54,13 +55,11 @@ function captureFirstFrame(file: File): Promise<void> {
       canvas.height = video.videoHeight
       const context = canvas.getContext('2d')
       if (!context) {
-        URL.revokeObjectURL(url)
         reject(new Error('无法读取视频帧。'))
         return
       }
       context.drawImage(video, 0, 0)
       canvas.toBlob((blob) => {
-        URL.revokeObjectURL(url)
         if (!blob) {
           reject(new Error('无法生成预览帧。'))
           return
@@ -72,7 +71,6 @@ function captureFirstFrame(file: File): Promise<void> {
     }
 
     video.onerror = () => {
-      URL.revokeObjectURL(url)
       reject(new Error('视频无法播放，请更换格式。'))
     }
   })
@@ -81,11 +79,16 @@ function captureFirstFrame(file: File): Promise<void> {
 async function onSelect(file: File) {
   errorMessage.value = ''
   selectedFile.value = file
+  uploadId.value = ''
+  previewUrl.value = ''
   sourcePoints.value = []
   phase.value = 'upload'
 
   try {
-    await captureFirstFrame(file)
+    const preview = await uploadPreview(file)
+    uploadId.value = preview.uploadId
+    previewUrl.value = preview.previewUrl
+    await captureFirstFrame(preview.previewUrl)
     phase.value = 'calibrate'
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '读取视频失败。'
@@ -98,7 +101,7 @@ function onPointsUpdate(points: SourcePoint[]) {
 }
 
 async function runEstimation() {
-  if (!selectedFile.value) {
+  if (!uploadId.value && !selectedFile.value) {
     errorMessage.value = '请先上传视频。'
     return
   }
@@ -116,7 +119,8 @@ async function runEstimation() {
 
   try {
     const result = await estimateSpeed({
-      file: selectedFile.value,
+      uploadId: uploadId.value || undefined,
+      file: selectedFile.value ?? undefined,
       sourcePoints: sourcePoints.value,
       targetWidth: targetWidth.value,
       targetHeight: targetHeight.value,
@@ -139,6 +143,8 @@ async function runEstimation() {
 function startOver() {
   revokeFrameUrl()
   selectedFile.value = null
+  uploadId.value = ''
+  previewUrl.value = ''
   sourcePoints.value = []
   resultVideoUrl.value = ''
   phase.value = 'upload'
