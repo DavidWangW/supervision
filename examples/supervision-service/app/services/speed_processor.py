@@ -10,6 +10,7 @@ from ultralytics import YOLO
 import supervision as sv
 
 from app.config import DEFAULT_CONFIDENCE, DEFAULT_IOU, DEFAULT_SPEED_WEIGHTS, OUTPUT_DIR
+from app.services.hardware import torch_device
 from app.services.video_encoding import ensure_browser_playable
 
 ProgressCallback = Callable[[int, int], None]
@@ -96,7 +97,8 @@ def estimate_speed_video(
     target = build_target_array(target_width, target_height)
 
     video_info = sv.VideoInfo.from_video_path(str(source_video_path))
-    model = YOLO(str(weights_path))
+    device = torch_device()
+    model = YOLO(str(weights_path)).to(device)
     byte_track = sv.ByteTrack(
         frame_rate=video_info.fps,
         track_activation_threshold=confidence_threshold,
@@ -139,6 +141,7 @@ def estimate_speed_video(
                 verbose=False,
                 conf=confidence_threshold,
                 iou=iou_threshold,
+                device=device,
             )[0]
             detections = sv.Detections.from_ultralytics(result)
             detections = detections[polygon_zone.trigger(detections)]

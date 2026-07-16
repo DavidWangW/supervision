@@ -1,9 +1,13 @@
+import logging
 import subprocess
 from pathlib import Path
 
 import imageio_ffmpeg
 
 from app.config import PREVIEW_DIR
+from app.services.hardware import detect_video_hw_encoder, video_encoder_args
+
+logger = logging.getLogger(__name__)
 
 
 def _ffmpeg_exe() -> str:
@@ -11,23 +15,42 @@ def _ffmpeg_exe() -> str:
 
 
 def _transcode_to_mp4(source_path: Path, target_path: Path) -> None:
-    """Re-encode ``source_path`` into a browser-playable H.264 MP4."""
+    """Re-encode ``source_path`` into a browser-playable H.264 MP4.
+
+    Uses a GPU hardware encoder (e.g. NVENC) when one is available and falls
+    back to the CPU ``libx264`` encoder if no GPU encoder is present or the
+    hardware encode fails at runtime.
+    """
     ffmpeg = _ffmpeg_exe()
+    base_args = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(source_path),
+        "-movflags",
+        "+faststart",
+        "-an",
+    ]
+
+    encoder = detect_video_hw_encoder()
+    if encoder and encoder != "libx264":
+        codec, extra = video_encoder_args(encoder)
+        try:
+            subprocess.run(
+                [*base_args, "-c:v", codec, *extra, str(target_path)],
+                check=True,
+                capture_output=True,
+            )
+            return
+        except subprocess.CalledProcessError as exc:  # pragma: no cover - GPU failure path
+            logger.warning(
+                "Hardware encode with %s failed, falling back to CPU: %s",
+                encoder,
+                exc,
+            )
+
     subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-i",
-            str(source_path),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            "-an",
-            str(target_path),
-        ],
+        [*base_args, "-c:v", "libx264", "-pix_fmt", "yuv420p", str(target_path)],
         check=True,
         capture_output=True,
     )

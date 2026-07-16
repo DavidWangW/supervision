@@ -9,6 +9,7 @@ from ultralytics import YOLO
 import supervision as sv
 
 from app.config import DEFAULT_CONFIDENCE, DEFAULT_IOU, DEFAULT_WEIGHTS
+from app.services.hardware import torch_device
 from app.services.label_map import build_chinese_labels, resolve_chinese_font
 from app.services.video_encoding import ensure_browser_playable
 
@@ -84,7 +85,8 @@ def track_video(
     on_progress: ProgressCallback | None = None,
 ) -> Path:
     """Run YOLO detection and ByteTrack on a video file."""
-    model = YOLO(str(weights_path))
+    device = torch_device()
+    model = YOLO(str(weights_path)).to(device)
     video_info = sv.VideoInfo.from_video_path(str(source_video_path))
     tracker = sv.ByteTrack()
     box_annotator = sv.BoxAnnotator()
@@ -107,6 +109,7 @@ def track_video(
                 verbose=False,
                 conf=confidence_threshold,
                 iou=iou_threshold,
+                device=device,
             )[0]
             detections = sv.Detections.from_ultralytics(results)
             detections = tracker.update_with_detections(detections)
