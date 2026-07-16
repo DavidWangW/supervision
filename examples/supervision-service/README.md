@@ -57,11 +57,11 @@ npm install
 
 ```powershell
 cd examples/supervision-service
-fastapi dev app/main.py
+fastapi dev app/main.py --port 8005
 ```
 
-API 地址：http://127.0.0.1:8000  
-API 文档：http://127.0.0.1:8000/docs
+API 地址：http://127.0.0.1:8005  
+API 文档：http://127.0.0.1:8005/docs
 
 **终端 2 — 启动 Web 前端**
 
@@ -70,7 +70,7 @@ cd examples/supervision-service/webapp
 npm run dev
 ```
 
-Web 控制台：http://127.0.0.1:5173
+Web 控制台：http://127.0.0.1:5175
 
 > 开发模式下，Vite 会将 `/api`、`/health`、`/docs` 代理到 `8000` 端口，无需额外配置 CORS。
 

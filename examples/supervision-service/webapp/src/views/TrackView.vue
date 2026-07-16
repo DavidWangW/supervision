@@ -73,7 +73,7 @@ onBeforeUnmount(() => {
       <div>
         <p class="eyebrow">Track Module</p>
         <h1>检测与跟踪</h1>
-        <p class="lede">YOLO 检测 + ByteTrack 多目标跟踪，输出带 ID 标注的视频。</p>
+        <p class="lede">检测 + 多目标跟踪，输出带 ID 标注的视频。</p>
       </div>
     </header>
 

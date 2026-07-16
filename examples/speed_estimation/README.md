@@ -100,6 +100,9 @@ https://github.com/roboflow/supervision/assets/26109316/d50118c1-2ae4-458d-915a-
 - ultralytics
 
     ```bash
+    python ultralytics_example.py --source_video_path data/6.2沈山段葫芦岛K424-000商品运输车车头失控.avi --target_video_path data/6.2沈山段葫芦岛K424-000商品运输车车头失控-result.avi --confidence_threshold 0.3 --iou_threshold 0.5
+    ```
+    ```bash
     python ultralytics_example.py \
         --source_video_path data/vehicles.mp4 \
         --target_video_path data/vehicles-result.mp4 \

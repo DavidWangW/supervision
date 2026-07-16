@@ -6,7 +6,7 @@ const features = [
     to: '/track',
     title: '检测与跟踪',
     summary: '上传视频，自动识别目标并分配跟踪 ID，输出带标注的结果视频。',
-    tag: 'YOLO + ByteTrack',
+    tag: 'Detection + ByteTrack',
   },
   {
     to: '/speed',
@@ -34,9 +34,9 @@ const steps = [
   <div class="dashboard page">
     <header class="hero">
       <p class="eyebrow">Highway Vision Console</p>
-      <h1>Supervision 视频分析控制台</h1>
+      <h1>高速公路智能视频分析控制台</h1>
       <p class="lede">
-        基于 supervision 的 Web 端工作台。上传视频、在线处理、预览结果，无需命令行。
+         上传视频、在线处理、预览结果、智能分析。
       </p>
     </header>
 
