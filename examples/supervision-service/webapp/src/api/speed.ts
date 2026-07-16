@@ -9,6 +9,7 @@ export interface SourcePoint {
 export interface SpeedEstimateOptions {
   file?: File
   uploadId?: string
+  serverVideo?: string
   sourcePoints: SourcePoint[]
   targetWidth: number
   targetHeight: number
@@ -28,6 +29,7 @@ export { uploadPreview }
 export async function estimateSpeed({
   file,
   uploadId,
+  serverVideo,
   sourcePoints,
   targetWidth,
   targetHeight,
@@ -37,12 +39,14 @@ export async function estimateSpeed({
   signal,
 }: SpeedEstimateOptions): Promise<SpeedEstimateResult> {
   const formData = new FormData()
-  if (uploadId) {
+  if (serverVideo) {
+    formData.append('server_video', serverVideo)
+  } else if (uploadId) {
     formData.append('upload_id', uploadId)
   } else if (file) {
     formData.append('file', file)
   } else {
-    throw new Error('Either file or uploadId is required.')
+    throw new Error('Either file, uploadId, or serverVideo is required.')
   }
   formData.append('source_points', JSON.stringify(sourcePoints))
   formData.append('target_width', String(targetWidth))

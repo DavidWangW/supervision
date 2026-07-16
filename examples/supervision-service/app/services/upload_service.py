@@ -4,7 +4,12 @@ from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
 
-from app.config import ALLOWED_VIDEO_EXTENSIONS, EXTENSION_MIME_TYPES, UPLOAD_DIR
+from app.config import (
+    ALLOWED_VIDEO_EXTENSIONS,
+    EXTENSION_MIME_TYPES,
+    SERVER_VIDEOS_DIR,
+    UPLOAD_DIR,
+)
 from app.db.repository import UploadRecord, create_upload, get_upload
 
 
@@ -67,19 +72,28 @@ def preview_path_for(upload_id: str) -> Path:
 def resolve_upload(
     file: Optional[UploadFile],
     upload_id: Optional[str],
+    server_video: Optional[str] = None,
 ) -> UploadRecord:
     """Return an existing upload record or persist a new file upload.
+
+    Resolution priority: a bundled ``server_video`` name, a previously stored
+    ``upload_id``, or a freshly uploaded ``file``.
 
     Args:
         file: Incoming multipart upload (optional if ``upload_id`` is given).
         upload_id: Identifier of a previously stored upload.
+        server_video: Name of a bundled sample video under ``SERVER_VIDEOS_DIR``.
 
     Returns:
         The resolved upload record.
 
     Raises:
-        HTTPException: If neither argument is usable or the record is missing.
+        HTTPException: If no source is usable or the referenced record/file is
+            missing.
     """
+    if server_video:
+        return server_video_record(server_video)
+
     if upload_id:
         record = get_upload(upload_id)
         if record is None:
@@ -87,10 +101,63 @@ def resolve_upload(
         return record
 
     if file is None:
-        raise HTTPException(status_code=400, detail="Either file or upload_id is required.")
+        raise HTTPException(
+            status_code=400,
+            detail="Either file, upload_id, or server_video is required.",
+        )
 
     try:
         return save_upload_file(file)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def safe_server_path(name: str) -> Path:
+    """Resolve a bundled sample video name to a safe absolute path.
+
+    Guards against path traversal by ensuring the resolved path stays inside
+    ``SERVER_VIDEOS_DIR``.
+
+    Args:
+        name: File name of the bundled sample video.
+
+    Returns:
+        Absolute path to the sample video.
+
+    Raises:
+        HTTPException: If the name escapes the sample directory or the file is
+            missing.
+    """
+    source = (SERVER_VIDEOS_DIR / name).resolve()
+    root = SERVER_VIDEOS_DIR.resolve()
+    if source != root and root not in source.parents:
+        raise HTTPException(status_code=400, detail="Invalid server video name.")
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail="Server video not found.")
+    return source
+
+
+def server_video_record(name: str) -> UploadRecord:
+    """Create an upload record pointing at a bundled sample video.
+
+    The record lets the processing endpoints treat a server-side sample exactly
+    like a user upload (it is persisted so it appears in history with the real
+    filename).
+
+    Args:
+        name: File name of the bundled sample video.
+
+    Returns:
+        A freshly created upload record referencing the sample file.
+    """
+    source = safe_server_path(name)
+    suffix = source.suffix.lower()
+    content_type = EXTENSION_MIME_TYPES.get(suffix, "video/mp4")
+    return create_upload(
+        original_filename=source.name,
+        stored_filename=source.name,
+        file_path=source,
+        file_size=source.stat().st_size,
+        content_type=content_type,
+    )
 

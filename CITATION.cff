@@ -7,11 +7,8 @@ message: >-
   If you use this software, please cite it using the
   metadata from this file.
 type: software
-authors:
-  - given-names: Roboflow
-    email: support@roboflow.com
-repository-code: 'https://github.com/roboflow/supervision'
-url: 'https://roboflow.github.io/supervision/'
+repository-code: 'https://github.com/DavidWangW/supervision'
+url: 'https://github.com/DavidWangW/supervision/'
 abstract: >-
   supervision features a range of utilities for use in
   computer vision projects, from detections processing and

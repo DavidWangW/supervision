@@ -43,6 +43,8 @@ function onVideoError() {
 
 .result-panel video {
   width: 100%;
+  max-height: 78vh;
+  object-fit: contain;
   background: #000;
   border: 1px solid var(--line);
 }

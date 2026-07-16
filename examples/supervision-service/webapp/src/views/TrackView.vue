@@ -1,18 +1,25 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 
-import { trackVideo, uploadPreview } from '@/api/video'
+import { trackVideo, uploadPreview, type ServerVideo } from '@/api/video'
 import ProcessingState from '@/components/ProcessingState.vue'
 import ResultPanel from '@/components/ResultPanel.vue'
+import ServerVideoPicker from '@/components/ServerVideoPicker.vue'
+import UploadProgress from '@/components/UploadProgress.vue'
 import VideoDropzone from '@/components/VideoDropzone.vue'
 import { useVideoFile } from '@/composables/useVideoFile'
 
 const { file, previewUrl, fileMeta, setFile, clear, revoke } = useVideoFile()
 
+const hasSource = computed(() => !!file.value || !!selectedServer.value)
+
 const uploadId = ref('')
+const selectedServer = ref('')
 const confidenceThreshold = ref(0.3)
 const iouThreshold = ref(0.7)
 const isProcessing = ref(false)
+const isUploading = ref(false)
+const uploadProgress = ref(0)
 const errorMessage = ref('')
 const resultVideoUrl = ref('')
 const progress = ref(0)
@@ -23,10 +30,15 @@ async function onSelect(selected: File) {
   errorMessage.value = ''
   resultVideoUrl.value = ''
   uploadId.value = ''
+  selectedServer.value = ''
   setFile(selected)
 
+  isUploading.value = true
+  uploadProgress.value = 0
   try {
-    const preview = await uploadPreview(selected)
+    const preview = await uploadPreview(selected, (percent) => {
+      uploadProgress.value = percent
+    })
     if (previewUrl.value.startsWith('blob:')) {
       URL.revokeObjectURL(previewUrl.value)
     }
@@ -34,12 +46,26 @@ async function onSelect(selected: File) {
     previewUrl.value = preview.previewUrl
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '预览生成失败。'
+  } finally {
+    isUploading.value = false
   }
 }
 
+async function onSelectServer(video: ServerVideo) {
+  errorMessage.value = ''
+  resultVideoUrl.value = ''
+  uploadId.value = ''
+  selectedServer.value = video.name
+  if (previewUrl.value.startsWith('blob:')) {
+    URL.revokeObjectURL(previewUrl.value)
+  }
+  clear()
+  previewUrl.value = video.previewUrl
+}
+
 async function submit() {
-  if (!uploadId.value && !file.value) {
-    errorMessage.value = '请先上传视频。'
+  if (!uploadId.value && !file.value && !selectedServer.value) {
+    errorMessage.value = '请先选择或上传视频。'
     return
   }
 
@@ -54,6 +80,7 @@ async function submit() {
     const result = await trackVideo({
       uploadId: uploadId.value || undefined,
       file: file.value ?? undefined,
+      serverVideo: selectedServer.value || undefined,
       confidenceThreshold: confidenceThreshold.value,
       iouThreshold: iouThreshold.value,
       onProgress: (nextProgress, frame, total) => {
@@ -73,6 +100,7 @@ async function submit() {
 function resetAll() {
   clear()
   uploadId.value = ''
+  selectedServer.value = ''
   errorMessage.value = ''
   resultVideoUrl.value = ''
 }
@@ -94,17 +122,29 @@ onBeforeUnmount(() => {
 
     <div class="grid">
       <section class="feed">
-        <VideoDropzone v-if="!file" @select="onSelect" />
+        <template v-if="!hasSource">
+          <ServerVideoPicker @select="onSelectServer" />
+          <VideoDropzone @select="onSelect" />
+        </template>
 
         <template v-else>
           <div class="meta">
             <div>
-              <strong>{{ fileMeta?.name }}</strong>
-              <span>{{ fileMeta?.sizeMb }} MB</span>
+              <strong>{{ fileMeta?.name ?? selectedServer }}</strong>
+              <span v-if="fileMeta">{{ fileMeta.sizeMb }} MB</span>
+              <span v-else>服务端示例视频</span>
             </div>
-            <button type="button" class="ghost" @click="resetAll">更换视频</button>
+            <button type="button" class="ghost" :disabled="isUploading" @click="resetAll">
+              更换视频
+            </button>
           </div>
-          <video v-if="previewUrl" class="preview" :src="previewUrl" controls />
+          <UploadProgress v-if="isUploading" :progress="uploadProgress" />
+          <video
+            v-else-if="previewUrl && !resultVideoUrl"
+            class="preview"
+            :src="previewUrl"
+            controls
+          />
         </template>
 
         <ProcessingState
@@ -137,7 +177,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="primary"
-          :disabled="isProcessing || !file"
+          :disabled="isProcessing || (!file && !selectedServer)"
           @click="submit"
         >
           {{ isProcessing ? '处理中…' : '开始处理' }}

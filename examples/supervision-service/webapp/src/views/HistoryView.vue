@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import {
   fetchJobRecords,
@@ -18,6 +18,7 @@ const jobs = ref<ProcessingJobRecord[]>([])
 const loading = ref(false)
 const errorMessage = ref('')
 const previewUrl = ref('')
+const videoEl = ref<HTMLVideoElement | null>(null)
 
 const jobTypeLabels: Record<string, string> = {
   track: '检测跟踪',
@@ -48,10 +49,7 @@ async function loadRecords() {
   loading.value = true
   errorMessage.value = ''
   try {
-    const [uploadData, jobData] = await Promise.all([
-      fetchUploadRecords(),
-      fetchJobRecords(),
-    ])
+    const [uploadData, jobData] = await Promise.all([fetchUploadRecords(), fetchJobRecords()])
     uploads.value = uploadData.items
     jobs.value = jobData.items
   } catch (error) {
@@ -66,11 +64,23 @@ function showPreview(url: string) {
 }
 
 function closePreview() {
+  videoEl.value?.pause()
   previewUrl.value = ''
 }
 
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && previewUrl.value) {
+    closePreview()
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
   void loadRecords()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
 
@@ -109,13 +119,17 @@ onMounted(() => {
     <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
 
     <section v-if="activeTab === 'jobs'" class="panel">
-      <p v-if="!loading && jobs.length === 0" class="empty">暂无解析记录，处理视频后会出现在这里。</p>
+      <p v-if="!loading && jobs.length === 0" class="empty">
+        暂无解析记录，处理视频后会出现在这里。
+      </p>
 
       <article v-for="job in jobs" :key="job.id" class="record-card">
         <div class="record-main">
           <div class="record-title">
             <span class="type">{{ jobTypeLabels[job.job_type] ?? job.job_type }}</span>
-            <span class="status" :class="job.status">{{ statusLabels[job.status] ?? job.status }}</span>
+            <span class="status" :class="job.status">{{
+              statusLabels[job.status] ?? job.status
+            }}</span>
           </div>
           <p class="filename">{{ job.original_filename ?? '未知文件' }}</p>
           <dl class="meta">
@@ -189,7 +203,7 @@ onMounted(() => {
           <h2>视频预览</h2>
           <button type="button" class="close" @click="closePreview">关闭</button>
         </header>
-        <video :src="previewUrl" controls autoplay />
+        <video ref="videoEl" :src="previewUrl" controls autoplay playsinline />
       </div>
     </div>
   </div>
@@ -425,6 +439,8 @@ onMounted(() => {
 
 .preview-dialog {
   width: min(960px, 100%);
+  max-height: 92vh;
+  overflow: auto;
   border: 1px solid var(--line);
   background: var(--bg-panel);
   padding: 1rem;
@@ -454,6 +470,8 @@ onMounted(() => {
 
 .preview-dialog video {
   width: 100%;
+  max-height: 78vh;
+  object-fit: contain;
   background: #000;
 }
 

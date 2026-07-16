@@ -18,9 +18,9 @@ const navItems = [
   <div class="app-shell">
     <aside class="sidebar">
       <RouterLink to="/" class="brand">
-        <span class="brand-mark">SV</span>
+        <span class="brand-mark">IV</span>
         <span class="brand-text">
-          <strong>Supervision</strong>
+          <strong>IntelliVision</strong>
           <small>Vision Console</small>
         </span>
       </RouterLink>
@@ -94,7 +94,6 @@ const navItems = [
   font-family: 'Barlow Condensed', sans-serif;
   font-size: 1.05rem;
   letter-spacing: 0.05em;
-  text-transform: uppercase;
 }
 
 .brand-text small {

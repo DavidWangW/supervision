@@ -9,6 +9,8 @@ OUTPUT_DIR = BASE_DIR / "outputs"
 MODELS_DIR = BASE_DIR / "models"
 DATA_DIR = BASE_DIR / "data"
 DATABASE_PATH = DATA_DIR / "supervision.db"
+# Bundled sample videos the web UI can offer when a user has no clip of their own.
+SERVER_VIDEOS_DIR = APP_DIR / "videos"
 
 # Common video containers accepted on upload. Browsers cannot decode many of
 # these (e.g. .avi, .mkv, .wmv) natively, so the service transcodes them to a
@@ -50,5 +52,5 @@ DEFAULT_SPEED_WEIGHTS = MODELS_DIR / "yolo26x.pt"
 DEFAULT_CONFIDENCE = 0.3
 DEFAULT_IOU = 0.7
 
-for directory in (UPLOAD_DIR, PREVIEW_DIR, OUTPUT_DIR, MODELS_DIR, DATA_DIR):
+for directory in (UPLOAD_DIR, PREVIEW_DIR, OUTPUT_DIR, MODELS_DIR, DATA_DIR, SERVER_VIDEOS_DIR):
     directory.mkdir(parents=True, exist_ok=True)

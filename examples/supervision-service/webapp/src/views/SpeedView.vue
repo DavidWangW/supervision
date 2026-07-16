@@ -2,10 +2,13 @@
 import { onBeforeUnmount, ref } from 'vue'
 
 import { estimateSpeed, uploadPreview } from '@/api/speed'
+import type { ServerVideo } from '@/api/video'
 import type { SourcePoint } from '@/api/speed'
 import CalibrationCanvas from '@/components/CalibrationCanvas.vue'
 import ProcessingState from '@/components/ProcessingState.vue'
 import ResultPanel from '@/components/ResultPanel.vue'
+import ServerVideoPicker from '@/components/ServerVideoPicker.vue'
+import UploadProgress from '@/components/UploadProgress.vue'
 import VideoDropzone from '@/components/VideoDropzone.vue'
 
 type Phase = 'upload' | 'calibrate' | 'processing' | 'result'
@@ -13,6 +16,7 @@ type Phase = 'upload' | 'calibrate' | 'processing' | 'result'
 const phase = ref<Phase>('upload')
 const selectedFile = ref<File | null>(null)
 const uploadId = ref('')
+const selectedServer = ref('')
 const previewUrl = ref('')
 const frameUrl = ref('')
 const videoWidth = ref(0)
@@ -24,6 +28,8 @@ const confidenceThreshold = ref(0.3)
 const iouThreshold = ref(0.7)
 const errorMessage = ref('')
 const resultVideoUrl = ref('')
+const isUploading = ref(false)
+const uploadProgress = ref(0)
 const progress = ref(0)
 const currentFrame = ref(0)
 const totalFrames = ref(0)
@@ -59,15 +65,19 @@ function captureFirstFrame(url: string): Promise<void> {
         return
       }
       context.drawImage(video, 0, 0)
-      canvas.toBlob((blob) => {
-        if (!blob) {
-          reject(new Error('无法生成预览帧。'))
-          return
-        }
-        revokeFrameUrl()
-        frameUrl.value = URL.createObjectURL(blob)
-        resolve()
-      }, 'image/jpeg', 0.92)
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error('无法生成预览帧。'))
+            return
+          }
+          revokeFrameUrl()
+          frameUrl.value = URL.createObjectURL(blob)
+          resolve()
+        },
+        'image/jpeg',
+        0.92,
+      )
     }
 
     video.onerror = () => {
@@ -80,12 +90,17 @@ async function onSelect(file: File) {
   errorMessage.value = ''
   selectedFile.value = file
   uploadId.value = ''
+  selectedServer.value = ''
   previewUrl.value = ''
   sourcePoints.value = []
   phase.value = 'upload'
 
+  isUploading.value = true
+  uploadProgress.value = 0
   try {
-    const preview = await uploadPreview(file)
+    const preview = await uploadPreview(file, (percent) => {
+      uploadProgress.value = percent
+    })
     uploadId.value = preview.uploadId
     previewUrl.value = preview.previewUrl
     await captureFirstFrame(preview.previewUrl)
@@ -93,6 +108,27 @@ async function onSelect(file: File) {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '读取视频失败。'
     selectedFile.value = null
+  } finally {
+    isUploading.value = false
+  }
+}
+
+async function onSelectServer(video: ServerVideo) {
+  errorMessage.value = ''
+  revokeFrameUrl()
+  selectedFile.value = null
+  uploadId.value = ''
+  selectedServer.value = video.name
+  sourcePoints.value = []
+  phase.value = 'upload'
+
+  try {
+    previewUrl.value = video.previewUrl
+    await captureFirstFrame(video.previewUrl)
+    phase.value = 'calibrate'
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '读取视频失败。'
+    selectedServer.value = ''
   }
 }
 
@@ -101,8 +137,8 @@ function onPointsUpdate(points: SourcePoint[]) {
 }
 
 async function runEstimation() {
-  if (!uploadId.value && !selectedFile.value) {
-    errorMessage.value = '请先上传视频。'
+  if (!uploadId.value && !selectedFile.value && !selectedServer.value) {
+    errorMessage.value = '请先选择或上传视频。'
     return
   }
   if (sourcePoints.value.length !== 4) {
@@ -121,6 +157,7 @@ async function runEstimation() {
     const result = await estimateSpeed({
       uploadId: uploadId.value || undefined,
       file: selectedFile.value ?? undefined,
+      serverVideo: selectedServer.value || undefined,
       sourcePoints: sourcePoints.value,
       targetWidth: targetWidth.value,
       targetHeight: targetHeight.value,
@@ -144,6 +181,7 @@ function startOver() {
   revokeFrameUrl()
   selectedFile.value = null
   uploadId.value = ''
+  selectedServer.value = ''
   previewUrl.value = ''
   sourcePoints.value = []
   resultVideoUrl.value = ''
@@ -168,7 +206,13 @@ onBeforeUnmount(() => {
 
     <div class="grid">
       <section class="feed">
-        <VideoDropzone v-if="phase === 'upload'" @select="onSelect" />
+        <template v-if="phase === 'upload'">
+          <UploadProgress v-if="isUploading" :progress="uploadProgress" />
+          <template v-else>
+            <ServerVideoPicker @select="onSelectServer" />
+            <VideoDropzone @select="onSelect" />
+          </template>
+        </template>
 
         <CalibrationCanvas
           v-else-if="frameUrl && phase !== 'result'"
@@ -235,7 +279,11 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="primary"
-            :disabled="phase === 'processing' || sourcePoints.length !== 4 || !selectedFile"
+            :disabled="
+              phase === 'processing' ||
+              sourcePoints.length !== 4 ||
+              (!selectedFile && !selectedServer)
+            "
             @click="runEstimation"
           >
             {{ phase === 'processing' ? '处理中…' : '开始测速' }}

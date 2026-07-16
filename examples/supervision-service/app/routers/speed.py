@@ -50,11 +50,15 @@ def speed_estimate_video(
     target_height: Annotated[float, Form(gt=0, description="Road length in meters")],
     file: Annotated[UploadFile | None, File(description="Input video file")] = None,
     upload_id: Annotated[str | None, Form(description="Reuse a previous upload instead of uploading again")] = None,
+    server_video: Annotated[
+        str | None,
+        Form(description="Use a bundled sample video instead of uploading one"),
+    ] = None,
     confidence_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_CONFIDENCE,
     iou_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_IOU,
 ) -> JobCreatedResponse:
     """Submit a speed estimation job and process it in the background."""
-    upload_record = resolve_upload(file, upload_id)
+    upload_record = resolve_upload(file, upload_id, server_video)
 
     parsed_points = _parse_source_points(source_points)
     job = create_processing_job(
