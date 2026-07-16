@@ -1,3 +1,4 @@
+import logging
 from collections import defaultdict, deque
 from collections.abc import Callable
 from pathlib import Path
@@ -9,9 +10,21 @@ from ultralytics import YOLO
 
 import supervision as sv
 
-from app.config import DEFAULT_CONFIDENCE, DEFAULT_IOU, DEFAULT_SPEED_WEIGHTS, OUTPUT_DIR
-from app.services.hardware import torch_device
+from app.config import (
+    DEFAULT_CONFIDENCE,
+    DEFAULT_GPU_BATCH_SIZE,
+    DEFAULT_IOU,
+    DEFAULT_SPEED_WEIGHTS,
+    OUTPUT_DIR,
+)
+from app.services.hardware import (
+    iter_batches,
+    resolve_effective_batch,
+    torch_device,
+)
 from app.services.video_encoding import ensure_browser_playable
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int], None]
 
@@ -69,6 +82,7 @@ def estimate_speed_video(
     confidence_threshold: float = DEFAULT_CONFIDENCE,
     iou_threshold: float = DEFAULT_IOU,
     on_progress: ProgressCallback | None = None,
+    batch_size: int = DEFAULT_GPU_BATCH_SIZE,
 ) -> Path:
     """Estimate vehicle speeds and write an annotated output video.
 
@@ -99,6 +113,16 @@ def estimate_speed_video(
     video_info = sv.VideoInfo.from_video_path(str(source_video_path))
     device = torch_device()
     model = YOLO(str(weights_path)).to(device)
+    if device == "cuda":
+        # Half precision roughly doubles GPU throughput with negligible accuracy loss.
+        model.half()
+    logger.info(
+        "estimate_speed_video: device=%s, weights=%s, half_precision=%s, requested_batch_size=%s",
+        device,
+        weights_path,
+        device == "cuda",
+        batch_size,
+    )
     byte_track = sv.ByteTrack(
         frame_rate=video_info.fps,
         track_activation_threshold=confidence_threshold,
@@ -121,6 +145,15 @@ def estimate_speed_video(
     )
 
     frame_generator = sv.get_video_frames_generator(str(source_video_path))
+    effective_batch, frame_generator = resolve_effective_batch(
+        device=device,
+        model=model,
+        frame_generator=frame_generator,
+        requested=batch_size,
+        conf=confidence_threshold,
+        iou=iou_threshold,
+    )
+    logger.info("estimate_speed_video: effective_batch_size=%s", effective_batch)
     polygon_zone = sv.PolygonZone(polygon=source)
     view_transformer = ViewTransformer(source=source, target=target)
     total_frames = video_info.total_frames
@@ -134,57 +167,64 @@ def estimate_speed_video(
     if on_progress and total_frames:
         on_progress(0, total_frames)
 
+    frame_index = 0
     with sv.VideoSink(str(target_video_path), video_info) as sink:
-        for frame_index, frame in enumerate(frame_generator, start=1):
-            result = model(
-                frame,
+        for frames in iter_batches(frame_generator, effective_batch):
+            # Batched inference maximizes GPU utilization; tracking, speed
+            # bookkeeping and writing stay strictly per-frame to keep the
+            # temporal order that ByteTrack and the coordinate deques rely on.
+            batch_results = model(
+                frames,
                 verbose=False,
                 conf=confidence_threshold,
                 iou=iou_threshold,
                 device=device,
-            )[0]
-            detections = sv.Detections.from_ultralytics(result)
-            detections = detections[polygon_zone.trigger(detections)]
-            detections = byte_track.update_with_detections(detections=detections)
-
-            points = detections.get_anchors_coordinates(
-                anchor=sv.Position.BOTTOM_CENTER
             )
-            points = view_transformer.transform_points(points=points).astype(int)
 
-            for tracker_id, (_, y) in zip(detections.tracker_id, points):
-                coordinates[tracker_id].append(y)
+            for frame, result in zip(frames, batch_results):
+                frame_index += 1
+                detections = sv.Detections.from_ultralytics(result)
+                detections = detections[polygon_zone.trigger(detections)]
+                detections = byte_track.update_with_detections(detections=detections)
 
-            labels = []
-            for tracker_id in detections.tracker_id:
-                if len(coordinates[tracker_id]) < video_info.fps / 2:
-                    labels.append(f"#{tracker_id}")
-                else:
-                    coordinate_start = coordinates[tracker_id][-1]
-                    coordinate_end = coordinates[tracker_id][0]
-                    distance = abs(coordinate_start - coordinate_end)
-                    time = len(coordinates[tracker_id]) / video_info.fps
-                    speed = distance / time * 3.6
-                    labels.append(f"#{tracker_id} {int(speed)} km/h")
+                points = detections.get_anchors_coordinates(
+                    anchor=sv.Position.BOTTOM_CENTER
+                )
+                points = view_transformer.transform_points(points=points).astype(int)
 
-            annotated_frame = frame.copy()
-            annotated_frame = trace_annotator.annotate(
-                scene=annotated_frame,
-                detections=detections,
-            )
-            annotated_frame = box_annotator.annotate(
-                scene=annotated_frame,
-                detections=detections,
-            )
-            annotated_frame = label_annotator.annotate(
-                scene=annotated_frame,
-                detections=detections,
-                labels=labels,
-            )
-            sink.write_frame(annotated_frame)
+                for tracker_id, (_, y) in zip(detections.tracker_id, points):
+                    coordinates[tracker_id].append(y)
 
-            if on_progress and total_frames:
-                on_progress(frame_index, total_frames)
+                labels = []
+                for tracker_id in detections.tracker_id:
+                    if len(coordinates[tracker_id]) < video_info.fps / 2:
+                        labels.append(f"#{tracker_id}")
+                    else:
+                        coordinate_start = coordinates[tracker_id][-1]
+                        coordinate_end = coordinates[tracker_id][0]
+                        distance = abs(coordinate_start - coordinate_end)
+                        time = len(coordinates[tracker_id]) / video_info.fps
+                        speed = distance / time * 3.6
+                        labels.append(f"#{tracker_id} {int(speed)} km/h")
+
+                annotated_frame = frame.copy()
+                annotated_frame = trace_annotator.annotate(
+                    scene=annotated_frame,
+                    detections=detections,
+                )
+                annotated_frame = box_annotator.annotate(
+                    scene=annotated_frame,
+                    detections=detections,
+                )
+                annotated_frame = label_annotator.annotate(
+                    scene=annotated_frame,
+                    detections=detections,
+                    labels=labels,
+                )
+                sink.write_frame(annotated_frame)
+
+                if on_progress and total_frames:
+                    on_progress(frame_index, total_frames)
 
     if on_progress and total_frames:
         on_progress(total_frames, total_frames)

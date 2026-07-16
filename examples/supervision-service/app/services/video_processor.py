@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -8,10 +9,21 @@ from ultralytics import YOLO
 
 import supervision as sv
 
-from app.config import DEFAULT_CONFIDENCE, DEFAULT_IOU, DEFAULT_WEIGHTS
-from app.services.hardware import torch_device
+from app.config import (
+    DEFAULT_CONFIDENCE,
+    DEFAULT_GPU_BATCH_SIZE,
+    DEFAULT_IOU,
+    DEFAULT_WEIGHTS,
+)
+from app.services.hardware import (
+    iter_batches,
+    resolve_effective_batch,
+    torch_device,
+)
 from app.services.label_map import build_chinese_labels, resolve_chinese_font
 from app.services.video_encoding import ensure_browser_playable
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int], None]
 
@@ -83,10 +95,21 @@ def track_video(
     confidence_threshold: float = DEFAULT_CONFIDENCE,
     iou_threshold: float = DEFAULT_IOU,
     on_progress: ProgressCallback | None = None,
+    batch_size: int = DEFAULT_GPU_BATCH_SIZE,
 ) -> Path:
     """Run YOLO detection and ByteTrack on a video file."""
     device = torch_device()
     model = YOLO(str(weights_path)).to(device)
+    if device == "cuda":
+        # Half precision roughly doubles GPU throughput with negligible accuracy loss.
+        model.half()
+    logger.info(
+        "track_video: device=%s, weights=%s, half_precision=%s, requested_batch_size=%s",
+        device,
+        weights_path,
+        device == "cuda",
+        batch_size,
+    )
     video_info = sv.VideoInfo.from_video_path(str(source_video_path))
     tracker = sv.ByteTrack()
     box_annotator = sv.BoxAnnotator()
@@ -95,6 +118,15 @@ def track_video(
 
     class_names = model.names
     frame_generator = sv.get_video_frames_generator(str(source_video_path))
+    effective_batch, frame_generator = resolve_effective_batch(
+        device=device,
+        model=model,
+        frame_generator=frame_generator,
+        requested=batch_size,
+        conf=confidence_threshold,
+        iou=iou_threshold,
+    )
+    logger.info("track_video: effective_batch_size=%s", effective_batch)
     total_frames = video_info.total_frames
 
     if on_progress and total_frames:
@@ -102,39 +134,45 @@ def track_video(
 
     target_video_path.parent.mkdir(parents=True, exist_ok=True)
 
+    frame_index = 0
     with sv.VideoSink(str(target_video_path), video_info) as sink:
-        for frame_index, frame in enumerate(frame_generator, start=1):
-            results = model(
-                frame,
+        for frames in iter_batches(frame_generator, effective_batch):
+            # Batched inference maximizes GPU utilization; tracking, annotation
+            # and writing stay strictly per-frame to preserve temporal order.
+            batch_results = model(
+                frames,
                 verbose=False,
                 conf=confidence_threshold,
                 iou=iou_threshold,
                 device=device,
-            )[0]
-            detections = sv.Detections.from_ultralytics(results)
-            detections = tracker.update_with_detections(detections)
-
-            labels = (
-                build_chinese_labels(class_names, detections.class_id)
-                if detections.class_id is not None
-                else []
             )
 
-            annotated_frame = box_annotator.annotate(
-                scene=frame.copy(),
-                detections=detections,
-            )
-            annotated_frame = draw_chinese_labels(
-                scene=annotated_frame,
-                detections=detections,
-                labels=labels,
-                font_path=chinese_font,
-                font_size=label_font_size,
-            )
-            sink.write_frame(frame=annotated_frame)
+            for frame, results in zip(frames, batch_results):
+                frame_index += 1
+                detections = sv.Detections.from_ultralytics(results)
+                detections = tracker.update_with_detections(detections)
 
-            if on_progress and total_frames:
-                on_progress(frame_index, total_frames)
+                labels = (
+                    build_chinese_labels(class_names, detections.class_id)
+                    if detections.class_id is not None
+                    else []
+                )
+
+                annotated_frame = box_annotator.annotate(
+                    scene=frame.copy(),
+                    detections=detections,
+                )
+                annotated_frame = draw_chinese_labels(
+                    scene=annotated_frame,
+                    detections=detections,
+                    labels=labels,
+                    font_path=chinese_font,
+                    font_size=label_font_size,
+                )
+                sink.write_frame(frame=annotated_frame)
+
+                if on_progress and total_frames:
+                    on_progress(frame_index, total_frames)
 
     if on_progress and total_frames:
         on_progress(total_frames, total_frames)
