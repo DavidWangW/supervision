@@ -61,3 +61,17 @@ export function uploadPreviewUrl(uploadId: string): string {
 export function jobResultUrl(jobId: string): string {
   return `/api/v1/records/jobs/${jobId}/file`
 }
+
+export async function deleteJobRecord(jobId: string): Promise<void> {
+  const response = await fetch(`/api/v1/records/jobs/${jobId}`, { method: 'DELETE' })
+  if (!response.ok) {
+    throw new Error(`Failed to delete job record: ${response.status}`)
+  }
+}
+
+export async function deleteUploadRecord(uploadId: string): Promise<void> {
+  const response = await fetch(`/api/v1/records/uploads/${uploadId}`, { method: 'DELETE' })
+  if (!response.ok) {
+    throw new Error(`Failed to delete upload record: ${response.status}`)
+  }
+}

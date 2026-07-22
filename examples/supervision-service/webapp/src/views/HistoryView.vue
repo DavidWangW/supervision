@@ -2,6 +2,8 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import {
+  deleteJobRecord,
+  deleteUploadRecord,
   fetchJobRecords,
   fetchUploadRecords,
   jobResultUrl,
@@ -56,6 +58,26 @@ async function loadRecords() {
     errorMessage.value = error instanceof Error ? error.message : '加载历史记录失败。'
   } finally {
     loading.value = false
+  }
+}
+
+async function removeJob(jobId: string) {
+  if (!confirm('确定删除此解析记录？关联的文件也会被删除。')) return
+  try {
+    await deleteJobRecord(jobId)
+    jobs.value = jobs.value.filter((j) => j.id !== jobId)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '删除失败。'
+  }
+}
+
+async function removeUpload(uploadId: string) {
+  if (!confirm('确定删除此上传记录？关联的文件也会被删除。')) return
+  try {
+    await deleteUploadRecord(uploadId)
+    uploads.value = uploads.value.filter((u) => u.id !== uploadId)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '删除失败。'
   }
 }
 
@@ -162,6 +184,10 @@ onBeforeUnmount(() => {
             预览
           </button>
           <a :href="jobResultUrl(job.id)" download>下载结果</a>
+          <button type="button" class="delete" @click="removeJob(job.id)">删除</button>
+        </div>
+        <div v-else class="record-actions">
+          <button type="button" class="delete" @click="removeJob(job.id)">删除</button>
         </div>
       </article>
     </section>
@@ -193,6 +219,7 @@ onBeforeUnmount(() => {
             预览
           </button>
           <a :href="uploadFileUrl(upload.id)" :download="upload.original_filename">下载原文件</a>
+          <button type="button" class="delete" @click="removeUpload(upload.id)">删除</button>
         </div>
       </article>
     </section>
@@ -420,6 +447,22 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(139, 148, 158, 0.45);
   background: transparent;
   cursor: pointer;
+}
+
+.delete {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid rgba(255, 138, 128, 0.35);
+  background: transparent;
+  color: var(--danger, #ff8a80);
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.delete:hover {
+  background: rgba(255, 138, 128, 0.1);
+  border-color: var(--danger, #ff8a80);
 }
 
 .error {

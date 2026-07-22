@@ -6,6 +6,8 @@ from fastapi.responses import FileResponse
 
 from app.config import EXTENSION_MIME_TYPES
 from app.db.repository import (
+    delete_processing_job,
+    delete_upload,
     get_processing_job,
     get_upload,
     list_processing_jobs,
@@ -143,3 +145,19 @@ def download_job_result(job_id: str) -> FileResponse:
         media_type="video/mp4",
         filename=file_path.name,
     )
+
+
+@router.delete("/uploads/{upload_id}")
+def delete_upload_record(upload_id: str) -> dict:
+    """Delete an upload record and its associated file from disk."""
+    if not delete_upload(upload_id):
+        raise HTTPException(status_code=404, detail="Upload record not found.")
+    return {"ok": True}
+
+
+@router.delete("/jobs/{job_id}")
+def delete_processing_job_record(job_id: str) -> dict:
+    """Delete a processing job record and its output file from disk."""
+    if not delete_processing_job(job_id):
+        raise HTTPException(status_code=404, detail="Processing job not found.")
+    return {"ok": True}

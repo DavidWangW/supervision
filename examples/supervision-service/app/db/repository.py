@@ -255,6 +255,46 @@ def get_processing_job(job_id: str) -> ProcessingJobRecord | None:
     return _row_to_job(row)
 
 
+def delete_upload(upload_id: str) -> bool:
+    """Delete an upload record and its associated file from disk.
+
+    Returns True if the record was found and deleted, False otherwise.
+    """
+    record = get_upload(upload_id)
+    if record is None:
+        return False
+
+    file_path = Path(record.file_path)
+    if file_path.is_file():
+        file_path.unlink(missing_ok=True)
+
+    with get_connection() as connection:
+        connection.execute("DELETE FROM processing_jobs WHERE upload_id = ?", (upload_id,))
+        connection.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        connection.commit()
+    return True
+
+
+def delete_processing_job(job_id: str) -> bool:
+    """Delete a processing job record and its output file from disk.
+
+    Returns True if the record was found and deleted, False otherwise.
+    """
+    record = get_processing_job(job_id)
+    if record is None:
+        return False
+
+    if record.output_path:
+        file_path = Path(record.output_path)
+        if file_path.is_file():
+            file_path.unlink(missing_ok=True)
+
+    with get_connection() as connection:
+        connection.execute("DELETE FROM processing_jobs WHERE id = ?", (job_id,))
+        connection.commit()
+    return True
+
+
 def _row_to_job(row: Any) -> ProcessingJobRecord:
     return ProcessingJobRecord(
         id=row["id"],
