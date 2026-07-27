@@ -136,22 +136,25 @@ def score_single(input: TrafficRiskInput) -> RiskResult:
             factors.append(f"路面：{input.road_condition}（+{r_points}）")
 
     # Headway (time gap to the leading vehicle). The single strongest
-    # behavioral crash predictor on highways.
-    min_hw = _safe(input.min_headway_s)
-    avg_hw = _safe(input.avg_headway_s)
-    if min_hw < 1.0:
-        score += 25
-        factors.append(f"最小车头时距 {min_hw:.1f}s < 1.0s，追尾风险极高（+25）")
-    elif min_hw < 1.5:
-        score += 18
-        factors.append(f"最小车头时距 {min_hw:.1f}s，偏危险（+18）")
-    elif min_hw < 2.0:
-        score += 12
-        factors.append(f"最小车头时距 {min_hw:.1f}s，偏近（+12）")
-    elif avg_hw > 6.0 and avg_hw > 0:
-        # Excessively large gaps can indicate stop-and-go / congestion onset.
-        score += 5
-        factors.append(f"平均车头时距 {avg_hw:.1f}s，疑似拥堵（+5）")
+    # behavioral crash predictor on highways. Only score it when a real
+    # measurement exists: ``None`` means "no vehicles / not computed this
+    # minute" and must not be treated as a 0-second (extreme) gap.
+    min_hw = input.min_headway_s
+    avg_hw = input.avg_headway_s
+    if min_hw is not None:
+        if min_hw < 1.0:
+            score += 25
+            factors.append(f"最小车头时距 {min_hw:.1f}s < 1.0s，追尾风险极高（+25）")
+        elif min_hw < 1.5:
+            score += 18
+            factors.append(f"最小车头时距 {min_hw:.1f}s，偏危险（+18）")
+        elif min_hw < 2.0:
+            score += 12
+            factors.append(f"最小车头时距 {min_hw:.1f}s，偏近（+12）")
+        elif avg_hw is not None and avg_hw > 6.0:
+            # Excessively large gaps can indicate stop-and-go / congestion onset.
+            score += 5
+            factors.append(f"平均车头时距 {avg_hw:.1f}s，疑似拥堵（+5）")
 
     # Density (vehicles per km). Higher density amplifies any hazard.
     density = _safe(input.density_per_km)
