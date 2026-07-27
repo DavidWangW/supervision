@@ -1,7 +1,7 @@
 # 高速公路视觉分析与事故风险预警系统 — 实施路线图
 
 > 本文档记录系统的现状评估、差距分析与分阶段实施规划，供后续迭代调整参考。
-> 最后更新：2026-07-22
+> 最后更新：2026-07-24
 
 ---
 
@@ -91,26 +91,27 @@ COCO 无法区分 SUV/轿车/货车/卡车，两条路线：
 
 ---
 
-### 阶段 3：实时流接入（2–3 周，架构升级）
+### 阶段 3：实时流接入（2–3 周，架构升级）✅ 已实现
 
-从"文件处理"升级为"实时流处理"：
+从"文件处理"升级为"实时流处理"，且**与离线视频文件共用同一套分析引擎**：
 
-1. **RTSP 接入**：用 OpenCV `cv2.VideoCapture(rtsp_url)` 或 `sv.get_video_frames_generator` 消费实时流。加**掉帧/重连/背压**处理。
-2. **常驻分析进程**：每路摄像头一个 worker（进程/协程），持续消费流、跑管道、写 `traffic_metrics`。
-3. **实时推送**：后端 WebSocket / SSE 把实时指标推给前端仪表盘（替代现在的轮询 job 状态）。
-4. **抽帧策略**：实时场景无需逐帧，可 5–10 FPS 采样，兼顾时延与算力。
+1. **RTSP 接入**：`app/services/stream_manager.py` 中每路流一个常驻后台线程，用 OpenCV `cv2.VideoCapture(rtsp_url)` 消费实时流，连接断开时**指数退避自动重连**。
+2. **背压处理**：每帧都解码以排空缓冲（降低时延），但仅在 `sample_fps` 采样率下跑推理，兼顾算力与时延。
+3. **常驻分析进程**：`StreamManager` 单例持有 worker 注册表，负责 start/stop/inspect，并在应用关闭时 `stop_all()`。每个 worker 复用 `TrafficFrameAnalyzer`（离线/实时同一代码）。
+4. **实时推送**：每路流暴露 MJPEG `StreamingResponse`（`/mjpeg`）用于带标注的实时画面，以及 WebSocket（`/ws`）每 0.4s 推送指标快照；前端另以 `/snapshot` 轮询作为降级通道。
+5. **存储复用**：实时流复用 `traffic_metrics`/`risk_assessments` 表，以 stream id 作为 `upload_id`（按分钟分桶 flush），并新增 `stream_sources` 表保存配置。
 
-**交付**：输入一个 RTSP 地址，仪表盘实时滚动显示该路口交通参数。
+**交付**：在「实时流」页输入 RTSP 地址，四点标定后即可实时滚动显示带标注画面、各车道流量/均速/时距/密度/货车占比与分钟级风险研判。离线文件模式完全不受影响。
 
 ---
 
-### 阶段 4：环境感知（天气 + 路面）（3–4 周）
+### 阶段 4：环境感知（天气 + 路面）（3–4 周）✅ 已实现（业务/启发式版）
 
-1. **基于画面的天气/路面分类**：训练/接入图像分类模型判别 `晴/雨/雪/雾` 和路面 `干燥/潮湿/积水/结冰/积雪`。数据可用公开数据集（如 DAWN、道路天气数据集）起步 + 本地摄像头补充。
+1. **基于画面的天气/路面分类**：`app/services/environment.py` 的 `SceneClassifier` 用经典 CV 启发式（亮度/对比度、暗通道先验测雾、拉普拉斯方差测对比、雨纹高频残差、雪白像素占比、路面镜面高光占比、昼夜判定）实时判别 `晴/阴/雨/雪/雾` 与路面 `干燥/潮湿/积水/结冰/积雪` 及能见度。接口已预留可扩展点：后续直接换成训练好的图像分类模型即可（detector 暂用 `yolo26x.pt` 占位，识别暂不走检测，走帧级统计特征）。
 2. **传感器融合（可选）**：预留接口接入气象站/路面结冰传感器（温度、湿度、路面温度、能见度），与视觉结果做加权融合，提升鲁棒性。
-3. 结果写入 `environment_readings`，作为风险模型输入。
+3. 结果写入 `environment_readings`（新增 `details_json`/`model` 列），作为风险模型输入；实时流每完成一分钟自动落库一次自动识别结果，离线分析整体落库一次。
 
-**交付**：仪表盘显示"当前：小雪 / 路面积雪 / 能见度中"，并入库。
+**交付**：仪表盘显示"当前：小雪 / 路面积雪 / 能见度中"，并入库；Analyze 页支持「识别当前帧」预览与一键采纳为人工标注，Stream 页实时滚动展示环境识别卡。
 
 ---
 
@@ -164,10 +165,50 @@ COCO 无法区分 SUV/轿车/货车/卡车，两条路线：
 
 ---
 
-## 六、落地切入点（待确认）
+## 六、落地切入点（已实现 ✅）
 
-- **A.** 阶段 0：统一分析管道抽象 + 数据库 Schema 扩展（打底座）
-- **B.** 阶段 1：车道级车流量 + 车头间距（快速看到新功能）
-- **C.** 阶段 5 规则版风险评分闭环（优先做出核心卖点 Demo）
+已按 **A → B → C → D** 顺序实现：阶段 0（数据底座）+ 阶段 1（流量/间距）+ 阶段 5（规则评分卡）+ 阶段 3（实时流接入，架构升级）+ 阶段 4（环境感知，启发式识别版）。
 
-> 当前未决：需与用户确认先从哪个切入点开始实现。
+### 已新增/修改文件
+
+**后端**
+- `app/db/database.py`：新增 `traffic_metrics` / `vehicle_tracks` / `environment_readings` / `accident_events` / `risk_assessments` 五张表。
+- `app/db/analytics_repository.py`：结构化分析数据的读写层。
+- `app/services/risk_engine.py`：规则评分卡风险引擎（天气/路面/车头时距/密度/货车占比 → 0–100 分 + 4 级 + 概率 + 因子解释）。
+- `app/services/analytics.py`：统一分析管道 `TrafficFrameAnalyzer`（离线文件与实时流共用的逐帧分析逻辑，一次检测+跟踪，插件式产出车速/车道流量/车头间距/密度并写库）。
+- `app/routers/analyze.py`：综合任务提交接口 `POST /api/v1/videos/analyze`。
+- `app/routers/analytics.py`：分析结果查询接口（traffic-metrics / vehicle-tracks / risk / environment）。
+- `app/services/job_runner.py` / `app/main.py`：接入 analyze 任务与新路由。
+
+**阶段 3 实时流（新增）**
+- `app/db/database.py`：新增 `stream_sources` 表（RTSP 地址、四点标定、车道数、环境、采样率、阈值、状态）。
+- `app/db/stream_repository.py`：视频流源 CRUD（含删除时级联清理 analytics）。
+- `app/db/analytics_repository.py`：新增 `latest_risk_assessments(upload_id)` 用于实时风险卡。
+- `app/services/stream_manager.py`：`StreamManager` 单例 + 常驻 worker（CV2 重连退避、背压、MJPEG 帧、WebSocket 快照、按分钟 flush）。
+- `app/routers/streams.py`：`/api/v1/streams` 路由（preview-frame / create / list / start / stop / delete / snapshot / mjpeg / ws）。
+- `app/main.py`：注册 streams 路由，lifespan 关闭时 `stream_manager.stop_all()`。
+- `webapp/vite.config.ts`：`/api` 代理增加 `ws: true` 支持 WebSocket。
+
+**阶段 4 环境感知（新增）**
+- `app/services/environment.py`：`SceneClassifier` 帧级视觉环境识别（天气/路面/能见度，经典 CV 启发式 + 可扩展接口，便于后续替换为训练模型）。
+- `app/db/database.py`：`environment_readings` 增加 `details_json`（完整识别结果）/ `model`（识别器标识）列迁移。
+- `app/db/analytics_repository.py`：`insert_environment_reading` 支持 `details`/`model`；新增 `latest_environment_reading(upload_id)`。
+- `app/services/analytics.py`：`TrafficFrameAnalyzer` 集成逐帧环境识别（指数平滑特征 + `aggregate_environment` 稳定整段结果），写入 `LiveSnapshot` 并参与风险评分。
+- `app/services/stream_manager.py`：实时流每分钟自动落库自动识别结果，并以识别结果驱动风险评分。
+- `app/routers/environment.py`：新增 `/api/v1/environment/detect`（base64 帧识别）+ `/api/v1/environment/labels`（可选标签）路由。
+- `app/routers/analytics.py`：新增 `/api/v1/analytics/environment/latest` 最近环境识别接口。
+- `app/main.py`：注册 environment 路由。
+- `webapp/src/api/environment.ts`：环境识别 API 客户端。
+- `webapp/src/components/EnvBars.vue`：环境识别概率条可复用组件。
+- `webapp/src/views/AnalyzeView.vue`：增加「识别当前帧」预览 + 采纳为人工标注 + 结果区环境卡。
+- `webapp/src/views/StreamView.vue`：实时面板增加「环境识别（实时）」卡。
+
+**前端**
+- `webapp/src/api/analytics.ts`：分析结果 API 客户端。
+- `webapp/src/api/streams.ts`：实时流 API 客户端（预览帧、CRUD、MJPEG/WS URL）。
+- `webapp/src/views/AnalyzeView.vue`：综合分析页面（标定 + 车道数 + 环境 + 风险卡 + 指标表 + 轨迹表）。
+- `webapp/src/views/StreamView.vue`：实时流监控页（新建/标定、列表管理、MJPEG 实时画面、WebSocket 实时指标与风险卡）。
+- `webapp/src/router/index.ts` + `AppLayout.vue`：新增 `/stream` 路由与「实时流」导航项。
+
+### 待办（后续阶段）
+- 阶段 2 细粒度车型（YOLO 微调）、阶段 4 的训练模型替换（将 `SceneClassifier` 启发式换成图像分类模型）、阶段 5 的 ML 风险模型（XGBoost/LightGBM）。

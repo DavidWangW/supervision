@@ -10,7 +10,9 @@ const navItems = [
   { to: '/', label: '概览', desc: 'Dashboard' },
   { to: '/track', label: '检测跟踪', desc: 'Track' },
   { to: '/speed', label: '速度估算', desc: 'Speed' },
+  { to: '/analyze', label: '综合分析', desc: 'Analytics' },
   { to: '/history', label: '历史记录', desc: 'Records' },
+  { to: '/stream', label: '实时流', desc: 'Streams' },
 ]
 </script>
 

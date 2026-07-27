@@ -7,14 +7,25 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import BASE_DIR
 from app.db.database import init_db
-from app.routers import health, records, speed, videos
+from app.routers import (
+    analytics,
+    analyze,
+    environment,
+    health,
+    records,
+    speed,
+    streams,
+    videos,
+)
 from app.schemas.common import ApiInfo
+from app.services.stream_manager import stream_manager
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
     yield
+    stream_manager.stop_all()
 
 
 app = FastAPI(
@@ -40,7 +51,11 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(videos.router)
 app.include_router(speed.router)
+app.include_router(analyze.router)
 app.include_router(records.router)
+app.include_router(analytics.router)
+app.include_router(streams.router)
+app.include_router(environment.router)
 
 
 @app.get("/api/info", response_model=ApiInfo)

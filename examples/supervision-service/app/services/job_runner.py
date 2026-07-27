@@ -2,6 +2,10 @@ from pathlib import Path
 
 from app.config import DEFAULT_CONFIDENCE, DEFAULT_IOU, DEFAULT_SPEED_WEIGHTS, DEFAULT_WEIGHTS
 from app.db.repository import mark_job_completed, mark_job_failed, update_job_progress
+from app.services.analytics import (
+    analyze_traffic_video,
+    build_analytics_output_path,
+)
 from app.services.speed_processor import build_speed_output_path, estimate_speed_video
 from app.services.video_processor import build_output_path, track_video
 
@@ -62,6 +66,47 @@ def run_speed_job(
             source_points=source_points,
             target_width=target_width,
             target_height=target_height,
+            weights_path=DEFAULT_SPEED_WEIGHTS,
+            confidence_threshold=confidence_threshold,
+            iou_threshold=iou_threshold,
+            on_progress=_make_progress_callback(job_id),
+        )
+        update_job_progress(job_id, progress=99, current_frame=0, total_frames=0)
+        mark_job_completed(job_id, output_path)
+    except Exception as exc:
+        mark_job_failed(job_id, str(exc))
+
+
+def run_analyze_job(
+    job_id: str,
+    upload_id: str,
+    source_video_path: Path,
+    source_points: list[list[int]],
+    target_width: float,
+    target_height: float,
+    lane_count: int,
+    lanes: list[list[list[int]]] | None,
+    weather: str | None,
+    road_condition: str | None,
+    visibility: str | None,
+    confidence_threshold: float = DEFAULT_CONFIDENCE,
+    iou_threshold: float = DEFAULT_IOU,
+) -> None:
+    """Run the unified traffic analysis in the background and persist results."""
+    output_path = build_analytics_output_path()
+    try:
+        analyze_traffic_video(
+            source_video_path=source_video_path,
+            target_video_path=output_path,
+            source_points=source_points,
+            target_width=target_width,
+            target_height=target_height,
+            upload_id=upload_id,
+            lanes=lanes,
+            lane_count=lane_count,
+            weather=weather,
+            road_condition=road_condition,
+            visibility=visibility,
             weights_path=DEFAULT_SPEED_WEIGHTS,
             confidence_threshold=confidence_threshold,
             iou_threshold=iou_threshold,

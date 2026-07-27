@@ -9,6 +9,10 @@ dependencies = [
     "ultralytics",
     "jsonargparse[signatures]",
     "imageio-ffmpeg>=0.5",
+    # PyAV provides a full ffmpeg build (incl. HEVC/H.265 decoding) used as a
+    # fallback in stream_manager when OpenCV's bundled ffmpeg cannot read a
+    # stream's frames (e.g. H.265 RTSP sources that VLC plays but OpenCV cannot).
+    "av>=12.0",
 ]
 
 [tool.fastapi]

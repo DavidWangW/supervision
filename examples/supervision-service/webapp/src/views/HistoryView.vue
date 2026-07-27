@@ -25,6 +25,7 @@ const videoEl = ref<HTMLVideoElement | null>(null)
 const jobTypeLabels: Record<string, string> = {
   track: '检测跟踪',
   speed: '速度估算',
+  analyze: '综合分析',
 }
 
 const statusLabels: Record<string, string> = {

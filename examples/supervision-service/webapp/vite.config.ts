@@ -14,7 +14,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:8005',
+      // ``ws: true`` lets the live stream WebSocket (/api/v1/streams/{id}/ws)
+      // be proxied to the backend during development.
+      '/api': { target: 'http://127.0.0.1:8005', ws: true },
       '/health': 'http://127.0.0.1:8005',
       '/docs': 'http://127.0.0.1:8005',
       '/openapi.json': 'http://127.0.0.1:8005',
