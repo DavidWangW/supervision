@@ -1,7 +1,7 @@
 # 高速公路视觉分析与事故风险预警系统 — 进度与路线图（续作交接文档）
 
 > 用途：本文档供**新会话**接续开发使用。包含项目目标、当前进度、运行方式、已实现能力、API 清单、已知问题与修复、未提交改动风险、细化路线图与下一步行动清单。
-> 最后更新：**2026-07-24**
+> 最后更新：**2026-07-28**
 > 配套详细规划见同目录 `ROADMAP.md`（分阶段路线图）。本文偏“如何接续”，ROADMAP 偏“为什么这么做”。
 
 ---
@@ -26,7 +26,7 @@
 当前**已实现**：阶段 0（数据底座）+ 阶段 1（流量/间距）+ 阶段 3（实时流接入）+ 阶段 4（环境感知·启发式版）+ 阶段 5 的规则评分卡部分。
 **尚未做**：阶段 2（细粒度车型 YOLO 微调）、阶段 4 的“训练模型替换启发式”、阶段 5 的 ML 风险模型（XGBoost/LightGBM）、传感器融合。
 
-**当前模型权重约定**：detector 统一用 `models/yolo26x.pt`（已存在，113 MB）。环境识别**不走检测**，走帧级经典 CV 统计特征（`SceneClassifier`）。训练好的专用模型后续替换 `SceneClassifier` 内部即可，对外接口不变。
+**当前模型权重约定**：detector 统一用 `models/yolo26x.pt`（已存在）。`models/` 目录下另含 `yolo11x.pt` / `yolo26m.pt` / `yolov8s.pt` 可作替换（改 `app/config.py` 的 `DEFAULT_WEIGHTS` / `DEFAULT_SPEED_WEIGHTS`）。环境识别**不走检测**，走帧级经典 CV 统计特征（`SceneClassifier`）。训练好的专用模型后续替换 `SceneClassifier` 内部即可，对外接口不变。
 
 ---
 
@@ -70,7 +70,8 @@
 ### 环境
 - Python >= 3.10；Node.js >= 22.18；NVIDIA GPU 可选（CPU 可跑但慢）。
 - 使用 **uv** 管理 venv（项目 venv 在 `D:\MyGithubRepo\supervision\.venv`）。
-- 权重 `models/yolo26x.pt` 已存在（113 MB）。首次运行 ultralytics 会自动下载/复用。
+- **本地 `supervision` 引用已自动处理**：`app/__init__.py` 在包导入时把仓库 `src/` 前置到 `sys.path`，因此无论用 `uv run` 还是系统/IDE 解释器，`import supervision` 都指向**当前仓库**版本（修复了此前解析到 PyPI 的问题，见第七节 8）。推荐 IDE 解释器仍指向本服务 `.venv` 以保证依赖完整。
+- 权重 `models/yolo26x.pt` 已存在。首次运行 ultralytics 会自动下载/复用。
 
 ### 启动（开发模式，推荐）
 ```powershell
@@ -172,21 +173,80 @@ npm run dev
 4. **中文日志在 Windows cmd 下乱码**
    - 仅显示问题，不影响功能；PowerShell / 写文件查看即可。
 
+### 2026-07-28 会话修复（运行期关键 Bug，已全部解决 ✅）
+
+> 以下 4 个问题均已在 `develop` 工作树修复并**已提交**，新会话可直接接续，无需重做。
+
+5. **点击「创建并启动」无画面，报 `TypeError: '_thread.lock' object is not callable`**
+   - 根因：`_StreamShared` 的 `lock` 字段写成 `field(default_factory=threading.Lock())`，
+     在**类定义时**就把锁实例当工厂调用，导致 `lock` 被赋值为「调用后的返回值」而非锁本身。
+   - 修复：`stream_manager.py` 改为 `field(default_factory=threading.Lock)`（传类，而非实例）。
+
+6. **有画面但无检测框 / 无车道线 / 无风险信息**
+   - 根因：`_run` 创建了 `infer_thread` 推理线程，却**漏写 `.start()`**，推理线程从未运行，
+     导致 `shared.analyzer` 始终为 `None`，`process()` 不产生任何标注/指标。
+   - 修复：`_run` 中补上 `infer_thread.start()`。
+
+7. **检测框与实时监控画面不同步、无法跟踪车辆**
+   - 根因：显示线程把「帧 N 的缓存检测框」用 `annotate_cached(frame)` 重画到**最新帧**上，
+     而 `process()` 本返回「原帧画框」的完整标注帧却被丢弃 → 框永远滞后、不跟随车辆。
+   - 修复：
+     - 推理线程改为发布**推理产出的标注帧**（`latest_annotated` + 单调递增 `annot_seq`），
+       显示线程仅在 `annot_seq` 变化时重推，保证「框与产生它的原始帧同源」。
+     - `analytics.py` 场景分类器**降频**到每 6 帧（`fi % 6 == 0`）跑一次，其余帧复用上一结果，
+       推理吞吐↑、框率↑；并加 **MJPEG 保活**（`_KEEPALIVE_DT=0.5s`）在推理慢时重推同帧防前端超时。
+     - 清理了 `analytics.py` 中已无用的 `_last_detections`/`_last_labels`/`_annot_lock` 与 `annotate_cached` 死代码。
+
+8. **`analytics.py` 中 `import supervision as sv` 报错（解析到 PyPI 版而非本项目版）**
+   - 根因：IDE / 系统 Python 未激活 editable 安装，Python 优先解析到 PyPI 上的 `supervision`，
+     而非仓库 `src/supervision`（后者含本项目定制/依赖的特性）。
+   - 修复：在 `app/__init__.py` 包导入时**前置本地 `src` 到 `sys.path`**（必须在任何 `import supervision` 之前）：
+     ```python
+     import sys
+     from pathlib import Path
+     _REPO_ROOT = Path(__file__).resolve().parents[3]
+     _LOCAL_SV_SRC = str(_REPO_ROOT / "src")
+     if _LOCAL_SV_SRC not in sys.path:
+         sys.path.insert(0, _LOCAL_SV_SRC)
+     ```
+   - 影响：无论用 `uv run` venv 还是系统/IDE 解释器启动，都引用**当前仓库**的 `supervision`。
+     建议 IDE 运行/调试的解释器仍指向本服务 `.venv` 以保证依赖完整。
+
+9. **「开始综合分析」报错：`Both input arrays must be (arrays of) 3-dimensional vectors, but they are 2 and 2 dimensional instead.`**
+   - 根因：**不是 OpenCV**，而是 **NumPy 2.x 改变了 `np.cross` 行为**——现在要求交叉轴长度为 3（三维向量），但本仓库 `src/supervision` 里两处用了二维向量：
+     - `src/supervision/detection/utils/internal.py` 的 `cross_product()`（被 `sv.LineZone` 调用，用于车道流量计数，在 `analytics.py` 的 `process()` 第 464 行 `self.line_counters[lane_id].trigger(in_det)` 触发）；
+     - `src/supervision/geometry/utils.py` 的 `get_polygon_center()`（多边形质心，shoelace 公式）。
+   - 修复：两处都改为把二维顶点 **补零成三维 (x, y, 0)** 后做 `np.cross`，再取 z 分量（等价于原二维叉积的标量结果），对 NumPy 1.x/2.x 均兼容。
+   - 验证：`analyzer.process()` 跑通；`sv.get_polygon_center` 返回正确质心。
+   - ⚠️ 此修复改动了**仓库根目录的 `src/supervision`（本地库）**，不在 `examples/supervision-service` 子目录内，提交时请连同根仓库一起 `git add`。
+
 ---
 
-## 八、⚠️ 未提交改动风险（最重要）
+## 八、代码提交状态（2026-07-28 更新）
 
-**当前 `examples/supervision-service` 的全部功能模块都在工作树里、尚未提交 git：**
-- 修改：`ROADMAP.md`、`app/db/database.py`、`app/main.py`、`app/services/job_runner.py`、`webapp/src/layouts/AppLayout.vue`、`webapp/src/router/index.ts`、`webapp/src/views/HistoryView.vue`、`webapp/vite.config.ts`、`pyproject.toml`（本次新增 av 依赖）。
-- 未跟踪（全新）：`app/db/analytics_repository.py`、`app/db/stream_repository.py`、`app/routers/{analytics,analyze,environment,streams}.py`、`app/services/{analytics,environment,risk_engine,stream_manager}.py`、`webapp/src/api/{analytics,environment,streams}.ts`、`webapp/src/components/EnvBars.vue`、`webapp/src/views/{AnalyzeView,StreamView}.vue`。
+**截至本次同步，`examples/supervision-service` 已全部纳入 git 跟踪并提交（约 99 个文件，`git status --short examples/supervision-service` 无未提交改动）。** 阶段 0/1/3/4 + 规则风险卡 + 上述 4 个运行期修复均已在 `develop` 工作树中。
 
-> 这些文件**只存在于工作区，没有 commit，也没有 push**。新会话若执行 `git checkout`/`git clean`/切分支可能丢失。
-> **接续第一步建议**：
-> ```powershell
-> cd examples/supervision-service
-> git add -A && git commit -m "feat: 阶段0/1/3/4 + 规则风险卡 完整实现"
-> # 并推送到 origin/develop（如需）
-> ```
+> ⚠️ 仍需留意：
+> - 这些提交**尚未推送到 `origin/develop`** 前，仅在本地。需要协同/备份时执行：
+>   ```powershell
+>   cd d:\MyGithubRepo\supervision
+>   git push origin develop
+>   ```
+> - 仍**不要**对任意目录执行 `git clean -fdx`（会误删 `uploads/`、`outputs/`、`models/` 等未跟踪但重要的运行产物与权重）。
+> - 根仓库另有未跟踪项（`解决方案/`、`*.docx`、`temp_read.txt`），与本项目无关，勿一并提交。
+
+## 八·补充、当前现存问题（结余，未解决）
+
+### 已解决（运行期，见第七节 5–8）
+- 无画面（`threading.Lock` 工厂）、无检测框（漏 `infer_thread.start()`）、框不同步/不跟踪（发布推理标注帧 + 场景分类器降频 + MJPEG 保活）、`import supervision` 指向 PyPI（本地 `src` 前置 `sys.path`）。
+
+### 仍待解决（架构 / 数据 / 模型层面，非运行期阻断）
+1. **阶段 2 细粒度车型**：当前 COCO 4 类（car/motorcycle/bus/truck），无 SUV/货车/卡车细分；需自建数据集微调 YOLO（用 `supervision` 的 `DetectionDataset`）。
+2. **阶段 4 训练模型替换**：`SceneClassifier` 目前是经典 CV 启发式；接口（`classify()`/`classify_features()`/`to_dict()`）已预留，直接换图像分类模型即可，前端零改动。
+3. **阶段 5 ML 风险模型**：当前是规则评分卡，待积累数据后上 XGBoost/LightGBM（历史 `accident_events` 作正样本）。
+4. **传感器融合**：`SceneClassifier` 预留气象站/路面传感器接入点，未实现。
+5. **实时流算力依赖 GPU**：CPU 下推理帧率低、框率受影响；RTSP H.265 需 PyAV 回退（已接，依赖 `av`）。
+6. **存储/部署**：SQLite 单机、BackgroundTasks 轻量；多路摄像头 + 高并发需 PostgreSQL/TimescaleDB + Celery。
 
 ---
 

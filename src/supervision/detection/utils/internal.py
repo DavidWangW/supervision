@@ -412,6 +412,18 @@ def cross_product(
         ]
     )
     vector_start = np.array([vector.start.x, vector.start.y])
-    return cast(
-        npt.NDArray[np.number], np.cross(vector_at_zero, anchors - vector_start)
+    # NumPy 2.0+ requires the cross-product axis to have size 3, but the
+    # anchors (and the line vector) are 2-D (x, y) vectors. Pad both with a
+    # zero z component, compute the 3-D cross product, and keep its z
+    # component -- this equals the original scalar z of the 2-D cross product
+    # (u_x * v_y - u_y * v_x) and works on every NumPy version.
+    shifted = anchors - vector_start
+    shifted3 = np.concatenate(
+        [shifted, np.zeros(shifted.shape[:-1] + (1,), dtype=shifted.dtype)],
+        axis=-1,
     )
+    vec3 = np.array(
+        [vector_at_zero[0], vector_at_zero[1], 0.0], dtype=shifted.dtype
+    )
+    cross = np.cross(vec3, shifted3)
+    return cast(npt.NDArray[np.number], cross[..., 2])

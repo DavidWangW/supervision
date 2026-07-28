@@ -41,7 +41,17 @@ def get_polygon_center(polygon: npt.NDArray[np.float64]) -> Point:
         raise ValueError("Polygon must have at least one vertex.")
 
     shift_polygon = np.roll(polygon, -1, axis=0)
-    signed_areas = np.cross(polygon, shift_polygon) / 2
+    # NumPy 2.0+ requires the cross-product axis to have size 3. The polygon
+    # vertices are 2-D (x, y), so pad them with a zero z component, compute the
+    # 3-D cross product, and keep its z component -- this equals the 2-D
+    # shoelace cross term (x_i * y_{i+1} - y_i * x_{i+1}) on every NumPy version.
+    signed_areas = (
+        np.cross(
+            np.pad(polygon, ((0, 0), (0, 1))),
+            np.pad(shift_polygon, ((0, 0), (0, 1))),
+        )[..., 2]
+        / 2
+    )
     if signed_areas.sum() == 0:
         center = np.mean(polygon, axis=0).round()
         return Point(x=center[0], y=center[1])

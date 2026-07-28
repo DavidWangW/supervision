@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import type { EnvProb } from '@/api/environment'
 
-const props = defineProps<{ env: EnvProb }>()
+const props = defineProps<{ env: EnvProb | null }>()
 
-function probList(probs: Record<string, number>) {
+function probList(probs: Record<string, number> | null | undefined) {
+  if (!probs) return []
   return Object.entries(probs).map(([label, value]) => ({ label, value }))
 }
 </script>
 
 <template>
-  <div class="env-bars">
+  <div v-if="env" class="env-bars">
     <div class="env-dim-row">
       <span class="env-tag">天气</span><strong>{{ env.weather }}</strong>
     </div>
