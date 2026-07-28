@@ -5,10 +5,16 @@ We redirect that module-level path to an isolated temp file per test so the
 structured-data tests never touch the real ``data/supervision.db``.
 """
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+# Keep the suite offline-deterministic: never let tests reach out to a live
+# VLM endpoint unless a test opts in explicitly. Must run before ``app.config``
+# is imported (transitively, below).
+os.environ.setdefault("SV_ENV_BACKEND", "heuristic")
 
 # Make the ``app`` package importable regardless of the invocation cwd.
 SERVICE_ROOT = Path(__file__).resolve().parent.parent

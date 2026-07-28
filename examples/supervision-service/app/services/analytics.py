@@ -13,6 +13,8 @@ maintaining two copies. Adding a new metric only requires touching the analyzer.
 """
 
 import logging
+import threading
+import time
 from collections import Counter, defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,7 +32,10 @@ from app.config import (
     DEFAULT_GPU_BATCH_SIZE,
     DEFAULT_IOU,
     DEFAULT_SPEED_WEIGHTS,
+    ENV_BACKEND,
     OUTPUT_DIR,
+    VLM_INTERVAL_SEC,
+    VLM_TIMEOUT,
 )
 from app.db.analytics_repository import (
     RiskAssessmentRow,
@@ -45,6 +50,7 @@ from app.services.environment import (
     EnvironmentResult,
     SceneClassifier,
     SceneFeatures,
+    create_scene_classifier,
 )
 from app.services.hardware import (
     iter_batches,
@@ -309,6 +315,23 @@ class TrafficFrameAnalyzer:
         self.latest_environment: EnvironmentResult | None = None
         self._env_features_ema: SceneFeatures | None = None
 
+        # VLM backend ("vlm" / "hybrid"): the heuristic keeps running per-frame
+        # for responsiveness while a background thread samples the VLM every
+        # ``VLM_INTERVAL_SEC`` seconds; once a reading is available its labels
+        # override the heuristic's (see :meth:`_merge_vlm`). VLM failures only
+        # log a warning, so the pipeline degrades gracefully to the heuristic.
+        self._vlm_classifier = None
+        self._vlm_lock = threading.Lock()
+        self._vlm_environment: EnvironmentResult | None = None
+        self._vlm_inflight = False
+        self._vlm_last_submit = 0.0
+        self._vlm_interval = max(1.0, float(VLM_INTERVAL_SEC))
+        if ENV_BACKEND in ("vlm", "hybrid"):
+            try:
+                self._vlm_classifier = create_scene_classifier("vlm")
+            except Exception as exc:  # pragma: no cover - config-time guard
+                logger.warning("VLM 环境识别初始化失败,回退启发式: %s", exc)
+
         # The live-stream pipeline keeps the fully annotated frame produced by
         # :meth:`process` (boxes drawn on the exact frame they were computed
         # from) and republishes it, so detections stay aligned with the vehicles
@@ -345,12 +368,14 @@ class TrafficFrameAnalyzer:
         Returns the latest environment payload dict (or ``None`` on the very
         first failure before any result exists).
         """
+        self._maybe_submit_vlm(frame)
         try:
             env = self.scene_classifier.classify(frame)
         except Exception as exc:  # pragma: no cover - frame-level guard
             logger.warning("Environment classification failed: %s", exc)
             return self.latest_environment.to_dict() if self.latest_environment else None
 
+        env = self._merge_vlm(env)
         self.latest_environment = env
         f = env.features
         if self._env_features_ema is None:
@@ -374,15 +399,124 @@ class TrafficFrameAnalyzer:
         """Exponential moving average step."""
         return prev * (1.0 - alpha) + new * alpha
 
+    # -- VLM background sampling ---------------------------------------------
+    def _maybe_submit_vlm(self, frame: np.ndarray) -> None:
+        """Kick off a background VLM classification if one is due.
+
+        At most one request is in flight at a time and requests are spaced at
+        least ``VLM_INTERVAL_SEC`` apart, so a slow endpoint can never stall
+        or pile up work on the frame loop (the call itself takes ~10 s).
+        """
+        if self._vlm_classifier is None or self._vlm_inflight:
+            return
+        now = time.monotonic()
+        if self._vlm_environment is not None and (
+            now - self._vlm_last_submit
+        ) < self._vlm_interval:
+            return
+        self._vlm_inflight = True
+        self._vlm_last_submit = now
+        threading.Thread(
+            target=self._run_vlm, args=(frame.copy(),), daemon=True
+        ).start()
+
+    def _run_vlm(self, frame: np.ndarray) -> None:
+        """Worker body: classify ``frame`` via the VLM and store the result."""
+        try:
+            env = self._vlm_classifier.classify(frame)
+        except Exception as exc:
+            logger.warning("VLM 环境识别失败(继续使用启发式): %s", exc)
+        else:
+            with self._vlm_lock:
+                self._vlm_environment = env
+        finally:
+            self._vlm_inflight = False
+
+    def _merge_vlm(self, heuristic: EnvironmentResult) -> EnvironmentResult:
+        """Overlay the latest VLM labels onto a heuristic result.
+
+        Labels / probabilities / model id come from the VLM reading;
+        ``is_night`` and ``features`` stay with the per-frame heuristic, which
+        reacts instantly to lighting changes (e.g. tunnels) and keeps the
+        feature EMA meaningful.
+        """
+        with self._vlm_lock:
+            vlm = self._vlm_environment
+        if vlm is None:
+            return heuristic
+        return EnvironmentResult(
+            weather=vlm.weather,
+            weather_probs=vlm.weather_probs,
+            road_condition=vlm.road_condition,
+            road_probs=vlm.road_probs,
+            visibility=vlm.visibility,
+            visibility_probs=vlm.visibility_probs,
+            is_night=heuristic.is_night,
+            features=heuristic.features,
+            model=vlm.model,
+        )
+
     def aggregate_environment(self) -> EnvironmentResult | None:
         """Return a stable clip/window-level environment reading.
 
         Uses the smoothed feature window when available so a single odd frame
-        (e.g. a truck's headlights) does not flip the whole-scene label.
+        (e.g. a truck's headlights) does not flip the whole-scene label. When
+        a VLM reading exists its labels take precedence (they are already
+        temporally sparse and stable by construction).
         """
         if self._env_features_ema is None:
-            return self.latest_environment
-        return self.scene_classifier.classify_features(self._env_features_ema)
+            base = self.latest_environment
+        else:
+            base = self.scene_classifier.classify_features(self._env_features_ema)
+        if base is None:
+            return None
+        return self._merge_vlm(base)
+
+    def finalize_environment(
+        self, frame: np.ndarray | None
+    ) -> EnvironmentResult | None:
+        """Produce the authoritative clip-level environment reading.
+
+        For VLM backends this runs a *synchronous* classification on a captured
+        representative frame so the final persisted result is never left at the
+        heuristic default just because the background sampler had not returned
+        yet (the VLM call takes ~10 s locally, shorter than many clips). The
+        heuristic / background reading is used only if the VLM call fails, so
+        the pipeline degrades gracefully.
+
+        Args:
+            frame: A representative frame (e.g. the clip's middle frame). When
+                ``None`` or when no VLM backend is configured, this simply
+                delegates to :meth:`aggregate_environment`.
+
+        Returns:
+            An :class:`EnvironmentResult` whose ``model`` is the VLM id when the
+            call succeeded, otherwise the heuristic id.
+        """
+        # A background sampler may already be producing (or may have produced)
+        # a reading during the frame loop. Wait for it instead of firing a second
+        # VLM request: two calls only serialize on the GPU and roughly double the
+        # wall-clock for no benefit (the first one ends up wasted).
+        deadline = time.monotonic() + VLM_TIMEOUT
+        while time.monotonic() < deadline:
+            with self._vlm_lock:
+                existing = self._vlm_environment
+                inflight = self._vlm_inflight
+            if existing is not None:
+                return existing
+            if not inflight:
+                # No background pass is running and none has completed yet: fall
+                # through to a synchronous call (only if we have a frame to send).
+                break
+            time.sleep(0.5)
+        if self._vlm_classifier is not None and frame is not None:
+            try:
+                env = self._vlm_classifier.classify(frame)
+                logger.info("剪辑级环境识别(VLM): %s", env.model)
+                return env
+            except Exception as exc:
+                logger.warning("剪辑级 VLM 识别失败,回退启发式: %s", exc)
+        return self.aggregate_environment()
 
     def process(
         self, frame: np.ndarray, result: object
@@ -755,6 +889,10 @@ def analyze_traffic_video(
         on_progress(0, total_frames)
 
     frame_index = 0
+    # Capture a representative frame (clip midpoint) so the final VLM
+    # classification reflects a stable, non-edge frame rather than the last one.
+    middle_index = (total_frames // 2) if total_frames else 0
+    representative_frame: np.ndarray | None = None
     with sv.VideoSink(str(target_video_path), video_info) as sink:
         for frames in iter_batches(frame_generator, effective_batch):
             batch_results = model(
@@ -768,6 +906,8 @@ def analyze_traffic_video(
                 frame_index += 1
                 annotated, _ = analyzer.process(frame, result)
                 sink.write_frame(annotated)
+                if frame_index == middle_index or representative_frame is None:
+                    representative_frame = frame.copy()
                 if on_progress and total_frames:
                     on_progress(frame_index, total_frames)
 
@@ -783,8 +923,10 @@ def analyze_traffic_video(
     from datetime import datetime, timezone
 
     # Phase 4: persist the auto-recognized environment for the whole clip and
-    # feed it into risk scoring (an explicit manual override still wins).
-    env = analyzer.aggregate_environment()
+    # feed it into risk scoring (an explicit manual override still wins). A
+    # synchronous VLM pass on the representative frame guarantees the result
+    # carries the real model id rather than the heuristic default.
+    env = analyzer.finalize_environment(representative_frame)
     if env is not None:
         observed_at = (
             datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")

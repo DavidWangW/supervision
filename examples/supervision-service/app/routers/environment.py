@@ -6,20 +6,26 @@ lifting lives in :mod:`app.services.environment`; this router is only transport.
 """
 
 import base64
+import logging
 import re
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
+from app.config import ENV_BACKEND, VLM_MODEL
 from app.services.environment import (
     DEFAULT_MODEL,
     ROAD_LABELS,
     VISIBILITY_LABELS,
     WEATHER_LABELS,
     SceneClassifier,
+    create_scene_classifier,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/environment", tags=["environment"])
 
@@ -28,6 +34,10 @@ class DetectRequest(BaseModel):
     """A single image frame to classify (data URL or raw base64)."""
 
     image: str = Field(..., description="data URL 或原始 base64 的 JPEG/PNG 图像")
+    backend: str | None = Field(
+        None,
+        description="识别后端: heuristic | vlm。缺省时使用服务配置 (SV_ENV_BACKEND)。",
+    )
 
 
 class DetectResponse(BaseModel):
@@ -60,9 +70,32 @@ def _decode_image(data_url: str) -> np.ndarray:
 
 
 @router.post("/detect", response_model=DetectResponse)
-def detect_environment(request: DetectRequest) -> DetectResponse:
-    """Classify weather / road condition / visibility from one image frame."""
+async def detect_environment(request: DetectRequest) -> DetectResponse:
+    """Classify weather / road condition / visibility from one image frame.
+
+    The backend follows the service configuration (``SV_ENV_BACKEND``) unless
+    the request pins one explicitly. VLM classification is executed in a
+    thread pool (a single call takes ~10 s) so the event loop stays free.
+    When the VLM backend was *implicitly* selected via configuration, failures
+    silently fall back to the heuristic; an explicitly requested ``vlm``
+    backend surfaces the failure as HTTP 502 instead.
+    """
+    backend = (request.backend or ENV_BACKEND).strip().lower()
+    if backend not in ("heuristic", "vlm", "hybrid"):
+        raise HTTPException(status_code=400, detail=f"未知识别后端: {backend!r}")
+
     frame = _decode_image(request.image)
+    if backend in ("vlm", "hybrid"):
+        classifier = create_scene_classifier("vlm")
+        try:
+            result = await run_in_threadpool(classifier.classify, frame)
+            return DetectResponse(**result.to_dict())
+        except Exception as exc:
+            if request.backend is not None:
+                raise HTTPException(
+                    status_code=502, detail=f"VLM 环境识别失败: {exc}"
+                ) from exc
+            logger.warning("VLM 环境识别失败,回退启发式: %s", exc)
     result = SceneClassifier().classify(frame)
     return DetectResponse(**result.to_dict())
 
@@ -70,9 +103,13 @@ def detect_environment(request: DetectRequest) -> DetectResponse:
 @router.get("/labels")
 def environment_labels() -> dict:
     """Return the candidate label sets for the UI dropdowns."""
+    active_model = (
+        DEFAULT_MODEL if ENV_BACKEND == "heuristic" else f"vlm:{VLM_MODEL}"
+    )
     return {
         "weather": WEATHER_LABELS,
         "road": ROAD_LABELS,
         "visibility": VISIBILITY_LABELS,
-        "model": DEFAULT_MODEL,
+        "model": active_model,
+        "backend": ENV_BACKEND,
     }

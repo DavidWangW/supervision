@@ -215,3 +215,40 @@ class SceneClassifier:
             An :class:`EnvironmentResult` for the frame.
         """
         return self.classify_features(self.extract_features(frame))
+
+
+def create_scene_classifier(backend: str | None = None):
+    """Build the scene classifier selected by ``backend`` / ``SV_ENV_BACKEND``.
+
+    Args:
+        backend: ``"heuristic"`` or ``"vlm"``. ``None`` (default) resolves to
+            the configured ``app.config.ENV_BACKEND``; ``"hybrid"`` maps to the
+            VLM classifier here because the hybrid behaviour (heuristic
+            per-frame + background VLM sampling) lives in the analyzer, not in
+            the classifier itself.
+
+    Returns:
+        A :class:`SceneClassifier` or
+        :class:`~app.services.vlm_environment.VLMSceneClassifier` instance,
+        both exposing ``classify(frame) -> EnvironmentResult``.
+
+    Example:
+        >>> classifier = create_scene_classifier("heuristic")
+        >>> classifier.model
+        'heuristic-v1'
+    """
+    # Imported lazily: config for env vars, vlm_environment to avoid a
+    # circular import (it imports this module's label vocabulary).
+    from app import config
+
+    resolved = (backend or config.ENV_BACKEND).strip().lower()
+    if resolved in ("vlm", "hybrid"):
+        from app.services.vlm_environment import VLMSceneClassifier
+
+        return VLMSceneClassifier(
+            base_url=config.VLM_BASE_URL,
+            api_key=config.VLM_API_KEY,
+            model=config.VLM_MODEL,
+            timeout=config.VLM_TIMEOUT,
+        )
+    return SceneClassifier()

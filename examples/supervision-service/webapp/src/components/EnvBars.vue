@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { EnvProb } from '@/api/environment'
 
 const props = defineProps<{ env: EnvProb | null }>()
@@ -7,6 +8,14 @@ function probList(probs: Record<string, number> | null | undefined) {
   if (!probs) return []
   return Object.entries(probs).map(([label, value]) => ({ label, value }))
 }
+
+// VLM-backed results all share the product name regardless of the concrete
+// backend model; heuristics keep their raw id (e.g. heuristic-v1) so the
+// fallback path stays distinguishable.
+const displayModel = computed(() => {
+  const model = props.env?.model ?? ''
+  return model.startsWith('vlm:') ? 'IntelliVisionEnv v0.1' : model
+})
 </script>
 
 <template>
@@ -39,7 +48,7 @@ function probList(probs: Record<string, number> | null | undefined) {
     </div>
 
     <p v-if="env.is_night" class="env-night">夜间场景</p>
-    <p class="env-model">识别模型：{{ env.model }}</p>
+    <p class="env-model">识别模型：{{ displayModel }}</p>
   </div>
 </template>
 
