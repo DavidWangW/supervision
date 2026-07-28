@@ -6,6 +6,11 @@ Each configured RTSP source gets one background worker thread that:
   it drops,
 * applies **backpressure** by decoding every frame (to keep the buffer drained
   and latency low) but only running inference at the configured ``sample_fps``,
+* **decouples display from inference**: a dedicated inference thread runs YOLO
+  at the configured ``sample_fps`` and produces a fully annotated frame
+  (boxes drawn on the exact frame they were computed from, so tracking stays
+  correct). The display thread republishes that latest annotated frame up to
+  ``_DISPLAY_MAX_FPS`` so the MJPEG preview stream stays smooth and alive,
 * runs the shared :class:`~app.services.analytics.TrafficFrameAnalyzer` so live
   streams use the exact same analysis code as offline files,
 * keeps the latest annotated JPEG (for the MJPEG preview endpoint) and the
@@ -26,7 +31,38 @@ from datetime import datetime, timezone
 from typing import Any
 
 import cv2
+import numpy as np
 from ultralytics import YOLO
+
+# ---------------------------------------------------------------------------
+# OpenCV polyline / contour compatibility shim
+# ---------------------------------------------------------------------------
+# On some OpenCV builds (notably 4.x) ``cv2.polylines`` / ``cv2.fillPoly`` /
+# ``cv2.drawContours`` require the polygon / contour point arrays to be
+# 3-dimensional ``(N, 1, 2)``. Passing the more common 2-dimensional
+# ``(N, 2)`` raises ``Both input arrays must be (arrays of) 3-dimensional
+# vectors, ...``. The bundled ``supervision`` annotators (e.g.
+# ``TraceAnnotator``) as well as our own lane drawing use ``(N, 2)`` arrays,
+# so we transparently coerce 2-D point arrays to 3-D here. This keeps the live
+# preview working across OpenCV versions without forking the dependency.
+for _CV2_FN in ("polylines", "fillPoly", "drawContours"):
+    _cv2_orig = getattr(cv2, _CV2_FN)
+
+    def _make_cv2_shim(_orig):
+        def _cv2_shim(img, pts, *args, **kwargs):
+            if isinstance(pts, (list, tuple)):
+                coerced = []
+                for _p in pts:
+                    _arr = np.asarray(_p)
+                    if _arr.ndim == 2:
+                        _arr = _arr.reshape(-1, 1, 2)
+                    coerced.append(_arr)
+                pts = coerced
+            return _orig(img, pts, *args, **kwargs)
+
+        return _cv2_shim
+
+    setattr(cv2, _CV2_FN, _make_cv2_shim(_cv2_orig))
 
 from app.config import DEFAULT_SPEED_WEIGHTS
 from app.db.analytics_repository import (
@@ -204,6 +240,15 @@ def _connect_source(
 
 _MAX_BACKOFF_S = 10.0
 _JPEG_QUALITY = 80
+# Upper bound for the MJPEG display path. The display thread republishes the
+# latest inference-annotated frame up to this rate so the preview stays smooth
+# and the connection does not time out, even though inference itself only runs
+# at the (much lower) ``sample_fps``.
+_DISPLAY_MAX_FPS = 25.0
+# If inference is very slow, re-publish the same annotated frame on this
+# cadence so MJPEG clients do not drop the stream while waiting for the next
+# inference result.
+_KEEPALIVE_DT = 0.5
 
 
 def _now_iso() -> str:
@@ -218,6 +263,7 @@ class StreamRuntime:
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     latest_jpeg: bytes | None = None
+    frame_seq: int = 0
     latest_snapshot: dict | None = None
     status: str = "starting"
     error: str | None = None
@@ -237,6 +283,23 @@ class StreamRuntime:
             "started_at": self.started_at,
             "lane_count": self.record.lane_count,
         }
+
+
+@dataclass
+class _StreamShared:
+    """Cross-thread state shared between a stream's display and inference loops."""
+
+    analyzer: "TrafficFrameAnalyzer | None" = None
+    latest_raw: Any = None
+    # Fully annotated frame produced by the inference thread for ``latest_raw``.
+    # The display thread republishes this so the boxes always sit on the exact
+    # frame they were computed on (tracking stays correct instead of lagging
+    # behind the live video).
+    latest_annotated: Any = None
+    # Monotonic counter bumped every time ``latest_annotated`` is refreshed, so
+    # the display thread can tell when a genuinely new frame is available.
+    annot_seq: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class StreamManager:
@@ -296,13 +359,56 @@ class StreamManager:
             update_stream_status(record.id, "error", runtime.error)
             return
 
-        analyzer: TrafficFrameAnalyzer | None = None
+        # Decouple inference from display: a dedicated thread runs YOLO at
+        # ``sample_fps`` and updates the shared analyzer, while this loop only
+        # decodes frames, re-annotates them with the cached detections and
+        # publishes at the display rate. That keeps the preview smooth even when
+        # inference is the bottleneck.
+        shared = _StreamShared()
+        infer_stop = threading.Event()
+        infer_thread = threading.Thread(
+            target=self._inference_loop,
+            args=(runtime, model, device, shared, infer_stop),
+            name=f"infer-{record.id[:8]}",
+            daemon=True,
+        )
+
         source: FrameSource | None = None
         backoff = 1.0
-        target_dt = 1.0 / max(record.sample_fps, 1.0)
-        last_proc = 0.0
-        last_flush_minute = -1
+        display_dt = 1.0 / _DISPLAY_MAX_FPS
+        last_display = 0.0
         ema_dt: float | None = None
+        last_out = 0.0
+        last_shown_seq = -1
+
+        # The inference thread must be started so it can create the analyzer,
+        # run YOLO and produce the annotated frame that the display loop
+        # republishes. Without this the preview would only ever show the raw
+        # frame (no lanes, no boxes, no risk data).
+        infer_thread.start()
+
+        def publish(annotated: Any, now: float, count: bool = True) -> None:
+            """Encode ``annotated`` and expose it to the MJPEG consumers.
+
+            ``count`` controls whether this publish advances the fps counter and
+            ``last_out`` timestamp. Keep-alive republishes of the same (already
+            shown) frame pass ``count=False`` so the reported fps reflects the
+            true inference/annotation rate rather than duplicate frames.
+            """
+            nonlocal last_out, ema_dt
+            ok_enc, buf = cv2.imencode(
+                ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY]
+            )
+            if not ok_enc:
+                return
+            runtime.latest_jpeg = buf.tobytes()
+            runtime.frame_seq += 1
+            if count and last_out:
+                dt = now - last_out
+                ema_dt = dt if ema_dt is None else 0.8 * ema_dt + 0.2 * dt
+                runtime.fps_actual = 1.0 / ema_dt if ema_dt else 0.0
+            if count:
+                last_out = now
 
         runtime.status = "running"
         update_stream_status(record.id, "running")
@@ -339,130 +445,51 @@ class StreamManager:
                         continue
 
                 now = time.monotonic()
-                # Backpressure: keep decoding to drain the buffer, but only run
-                # the (expensive) inference at the configured sample rate.
-                if now - last_proc < target_dt:
+                # Hand the freshest raw frame to the inference thread.
+                with shared.lock:
+                    shared.latest_raw = frame
+                    annotated = shared.latest_annotated
+                    annot_seq = shared.annot_seq
+
+                # Publish the most recent *inference-annotated* frame. Boxes are
+                # drawn on the exact frame they were computed from, so they track
+                # vehicles correctly instead of lagging behind the live video.
+                # A new annotated frame arrives only at the inference rate; in
+                # between we republish it (up to _DISPLAY_MAX_FPS) to keep the
+                # stream smooth, and on a slower keep-alive cadence if inference
+                # is very slow, so MJPEG clients don't drop the connection.
+                if now - last_display < display_dt:
                     continue
-                if last_proc:
-                    dt = now - last_proc
-                    ema_dt = dt if ema_dt is None else 0.8 * ema_dt + 0.2 * dt
-                    runtime.fps_actual = 1.0 / ema_dt if ema_dt else 0.0
-                last_proc = now
-
-                if analyzer is None:
-                    h, w = frame.shape[:2]
-                    analyzer = TrafficFrameAnalyzer(
-                        source_points=record.source_points,
-                        target_width=record.target_width,
-                        target_height=record.target_height,
-                        fps=record.sample_fps,
-                        resolution_wh=(w, h),
-                        lane_count=record.lane_count,
-                        confidence_threshold=record.confidence_threshold,
-                    )
-
                 try:
-                    result = model(
-                        frame,
-                        verbose=False,
-                        conf=record.confidence_threshold,
-                        iou=record.iou_threshold,
-                        device=device,
-                    )[0]
-                    annotated, snapshot = analyzer.process(frame, result)
-                except Exception as exc:  # pragma: no cover - per-frame guard
-                    logger.warning("Stream %s frame error: %s", record.id, exc)
-                    continue
-
-                runtime.frames_processed += 1
-
-                ok_enc, buf = cv2.imencode(
-                    ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY]
-                )
-                if ok_enc:
-                    runtime.latest_jpeg = buf.tobytes()
-
-                # Phase 4: operator override wins, otherwise use the live
-                # auto-recognized environment for risk scoring.
-                detected = analyzer.latest_environment
-                eff_weather = record.weather or (detected.weather if detected else None)
-                eff_road = record.road_condition or (
-                    detected.road_condition if detected else None
-                )
-
-                # Flush finished minutes to the database.
-                current_minute = snapshot.minute_bucket
-                if current_minute > last_flush_minute:
-                    rows = analyzer.pop_completed_metric_rows(record.id, current_minute)
-                    if rows:
-                        insert_traffic_metrics(rows)
-                        results = compute_risk(
-                            rows, analyzer.lane_count, eff_weather, eff_road
-                        )
-                        insert_risk_assessments(
-                            risk_results_to_rows(record.id, _now_iso(), results)
-                        )
-                    # Persist the auto-recognized environment for the minute that
-                    # just completed.
-                    agg = analyzer.aggregate_environment()
-                    if agg is not None:
-                        insert_environment_reading(
-                            upload_id=record.id,
-                            observed_at=_now_iso(),
-                            weather=agg.weather,
-                            road_condition=agg.road_condition,
-                            visibility=agg.visibility,
-                            source="auto",
-                            details=agg.to_dict(),
-                            model=agg.model,
-                        )
-                    last_flush_minute = current_minute
-
-                # Attach a lightweight live risk summary for the WebSocket push.
-                live_rows = analyzer.build_metric_rows(record.id)
-                live_results = compute_risk(
-                    live_rows, analyzer.lane_count, eff_weather, eff_road
-                )
-                overall = next((r for r in live_results if r.lane_id is None), None)
-                snapshot.risk = {
-                    "overall": (
-                        {
-                            "risk_level": overall.risk_level,
-                            "risk_score": overall.risk_score,
-                            "probability": overall.probability,
-                            "factors": overall.factors,
-                        }
-                        if overall
-                        else None
-                    ),
-                    "lanes": [
-                        {
-                            "lane_id": r.lane_id,
-                            "risk_level": r.risk_level,
-                            "risk_score": r.risk_score,
-                        }
-                        for r in live_results
-                        if r.lane_id is not None
-                    ],
-                }
-                snapshot_dict = snapshot.to_dict()
-                snapshot_dict["weather"] = eff_weather
-                snapshot_dict["road_condition"] = eff_road
-                snapshot_dict["visibility"] = (
-                    detected.visibility if detected else record.visibility
-                )
-                runtime.latest_snapshot = snapshot_dict
+                    if annot_seq != last_shown_seq:
+                        if annotated is not None:
+                            publish(annotated, now, count=True)
+                        else:
+                            publish(frame, now, count=False)
+                        last_shown_seq = annot_seq
+                    elif now - last_display >= _KEEPALIVE_DT:
+                        if annotated is not None:
+                            publish(annotated, now, count=False)
+                        else:
+                            publish(frame, now, count=False)
+                except Exception as exc:  # pragma: no cover
+                    logger.debug(
+                        "Stream %s display frame error: %s", record.id, exc
+                    )
+                last_display = now
         except Exception as exc:  # pragma: no cover - worker crash guard
             runtime.status = "error"
             runtime.error = str(exc)
             update_stream_status(record.id, "error", str(exc))
             logger.exception("Stream worker %s crashed", record.id)
         finally:
+            infer_stop.set()
+            infer_thread.join(timeout=5.0)
             if source is not None:
                 source.release()
-            if analyzer is not None:
+            if shared.analyzer is not None:
                 try:
-                    remaining = analyzer.build_metric_rows(record.id)
+                    remaining = shared.analyzer.build_metric_rows(record.id)
                     if remaining:
                         insert_traffic_metrics(remaining)
                 except Exception:  # pragma: no cover - flush guard
@@ -470,6 +497,146 @@ class StreamManager:
             if runtime.status != "error":
                 runtime.status = "stopped"
                 update_stream_status(record.id, "stopped")
+
+
+    def _inference_loop(
+        self,
+        runtime: StreamRuntime,
+        model: Any,
+        device: str,
+        shared: "_StreamShared",
+        stop_event: threading.Event,
+    ) -> None:
+        """Run YOLO + analysis at ``sample_fps`` off the display thread.
+
+        Grabs the latest raw frame published by the decode/display loop, runs
+        detection/tracking/metrics, and updates the shared analyzer. Completed
+        minutes are flushed to the database and the live risk snapshot is pushed
+        for the WebSocket feed. Keeping this work off the display thread is what
+        prevents slow inference from stalling the MJPEG preview.
+        """
+        record = runtime.record
+        target_dt = 1.0 / max(record.sample_fps, 1.0)
+        last_proc = 0.0
+        last_flush_minute = -1
+
+        while not stop_event.is_set() and not runtime.stop_event.is_set():
+            now = time.monotonic()
+            if now - last_proc < target_dt:
+                stop_event.wait(min(0.02, target_dt - (now - last_proc)))
+                continue
+
+            with shared.lock:
+                frame = shared.latest_raw
+            if frame is None or frame.size == 0:
+                stop_event.wait(0.02)
+                last_proc = time.monotonic()
+                continue
+
+            if shared.analyzer is None:
+                h, w = frame.shape[:2]
+                shared.analyzer = TrafficFrameAnalyzer(
+                    source_points=record.source_points,
+                    target_width=record.target_width,
+                    target_height=record.target_height,
+                    fps=record.sample_fps,
+                    resolution_wh=(w, h),
+                    lane_count=record.lane_count,
+                    confidence_threshold=record.confidence_threshold,
+                )
+
+            try:
+                result = model(
+                    frame,
+                    verbose=False,
+                    conf=record.confidence_threshold,
+                    iou=record.iou_threshold,
+                    device=device,
+                )[0]
+                annotated, snapshot = shared.analyzer.process(frame, result)
+            except Exception as exc:  # pragma: no cover - per-frame guard
+                logger.warning("Stream %s frame error: %s", record.id, exc)
+                last_proc = time.monotonic()
+                continue
+
+            # Hand the fully annotated frame to the display thread. The boxes
+            # are drawn on ``frame`` (the exact frame YOLO saw), so when the
+            # display loop republishes this the detections stay aligned with the
+            # vehicles instead of lagging behind the live video.
+            with shared.lock:
+                shared.latest_annotated = annotated
+                shared.annot_seq += 1
+
+            runtime.frames_processed += 1
+
+            detected = shared.analyzer.latest_environment
+            eff_weather = record.weather or (detected.weather if detected else None)
+            eff_road = record.road_condition or (
+                detected.road_condition if detected else None
+            )
+
+            current_minute = snapshot.minute_bucket
+            if current_minute > last_flush_minute:
+                rows = shared.analyzer.pop_completed_metric_rows(
+                    record.id, current_minute
+                )
+                if rows:
+                    insert_traffic_metrics(rows)
+                    results = compute_risk(
+                        rows, shared.analyzer.lane_count, eff_weather, eff_road
+                    )
+                    insert_risk_assessments(
+                        risk_results_to_rows(record.id, _now_iso(), results)
+                    )
+                agg = shared.analyzer.aggregate_environment()
+                if agg is not None:
+                    insert_environment_reading(
+                        upload_id=record.id,
+                        observed_at=_now_iso(),
+                        weather=agg.weather,
+                        road_condition=agg.road_condition,
+                        visibility=agg.visibility,
+                        source="auto",
+                        details=agg.to_dict(),
+                        model=agg.model,
+                    )
+                last_flush_minute = current_minute
+
+            live_rows = shared.analyzer.build_metric_rows(record.id)
+            live_results = compute_risk(
+                live_rows, shared.analyzer.lane_count, eff_weather, eff_road
+            )
+            overall = next((r for r in live_results if r.lane_id is None), None)
+            snapshot.risk = {
+                "overall": (
+                    {
+                        "risk_level": overall.risk_level,
+                        "risk_score": overall.risk_score,
+                        "probability": overall.probability,
+                        "factors": overall.factors,
+                    }
+                    if overall
+                    else None
+                ),
+                "lanes": [
+                    {
+                        "lane_id": r.lane_id,
+                        "risk_level": r.risk_level,
+                        "risk_score": r.risk_score,
+                    }
+                    for r in live_results
+                    if r.lane_id is not None
+                ],
+            }
+            snapshot_dict = snapshot.to_dict()
+            snapshot_dict["weather"] = eff_weather
+            snapshot_dict["road_condition"] = eff_road
+            snapshot_dict["visibility"] = (
+                detected.visibility if detected else record.visibility
+            )
+            runtime.latest_snapshot = snapshot_dict
+
+            last_proc = time.monotonic()
 
 
 # Module-level singleton used across the app.

@@ -28,6 +28,10 @@ dependencies = [
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+# Use the project's own ``supervision`` checkout (repo root) instead of the
+# PyPI release, so the service picks up local edits to the library and upcoming
+# features that modify ``supervision`` directly. Installed in editable mode.
+supervision = [{ path = "../..", editable = true }]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"

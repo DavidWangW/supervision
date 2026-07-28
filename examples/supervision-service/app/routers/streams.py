@@ -177,14 +177,22 @@ def stream_mjpeg(stream_id: str) -> StreamingResponse:
     boundary = "frame"
 
     async def frames():
+        # Push a frame as soon as the worker publishes a new one (tracked by
+        # ``frame_seq``). A fixed-interval sleep would beat against the actual
+        # frame production rate and cause duplicated/skipped frames, which the
+        # browser renders as visible stutter.
+        last_seq = -1
         while stream_manager.is_running(stream_id):
+            seq = runtime.frame_seq
             jpeg = runtime.latest_jpeg
-            if jpeg is not None:
+            if jpeg is not None and seq != last_seq:
+                last_seq = seq
                 yield (
                     b"--" + boundary.encode() + b"\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 )
-            await asyncio.sleep(1.0 / max(runtime.record.sample_fps, 1.0))
+            else:
+                await asyncio.sleep(0.01)
 
     return StreamingResponse(
         frames(),

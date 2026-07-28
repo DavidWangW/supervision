@@ -2701,8 +2701,8 @@ wheels = [
 
 [[package]]
 name = "supervision"
-version = "0.29.1"
-source = { registry = "https://pypi.org/simple" }
+version = "0.29.0.dev0"
+source = { editable = "../../" }
 dependencies = [
     { name = "defusedxml" },
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2720,9 +2720,59 @@ dependencies = [
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/ec/293e5693ef5f32b54533b680b909a96976925adbb5c3bbfbf53b199182e0/supervision-0.29.1.tar.gz", hash = "sha256:2db9f968a3253e6778573c39bbb8a8e3fa586ece6c98fbdc41d8fd8508eda5af", size = 246950, upload-time = "2026-06-23T19:55:37.717Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/7c/ed95842ac2e323f6a0fcaf5a5bb56b62c0596a4b177872da9f7605ca1ceb/supervision-0.29.1-py3-none-any.whl", hash = "sha256:8518f6bad0d19ff7a959d1b9eb1b54517aded814aa7f237598fed0e3a772c281", size = 280218, upload-time = "2026-06-23T19:55:36.114Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "defusedxml", specifier = ">=0.7.1" },
+    { name = "matplotlib", specifier = ">=3.6" },
+    { name = "numpy", specifier = ">=1.21.2" },
+    { name = "opencv-python", specifier = ">=4.5.5.64" },
+    { name = "pandas", marker = "extra == 'metrics'", specifier = ">=2" },
+    { name = "pillow", specifier = ">=9.4" },
+    { name = "pydeprecate", specifier = ">=0.9,<0.10" },
+    { name = "pyyaml", specifier = ">=5.3" },
+    { name = "requests", specifier = ">=2.26" },
+    { name = "scipy", specifier = ">=1.10" },
+    { name = "tqdm", specifier = ">=4.62.3" },
+]
+provides-extras = ["metrics"]
+
+[package.metadata.requires-dev]
+build = [
+    { name = "build", specifier = ">=0.10,<1.5" },
+    { name = "twine", specifier = ">=5.1.1,<7" },
+    { name = "wheel", specifier = ">=0.40,<0.48" },
+]
+dev = [
+    { name = "docutils", specifier = "!=0.21" },
+    { name = "ipywidgets", specifier = ">=8.1.1" },
+    { name = "jupytext", specifier = ">=1.16.1" },
+    { name = "nbconvert", specifier = ">=7.14.2" },
+    { name = "notebook", specifier = ">=6.5.3,<8" },
+    { name = "pre-commit", specifier = ">=3.8" },
+    { name = "pytest", specifier = ">=7.2.2,<9" },
+    { name = "pytest-cov", specifier = ">=4,<8" },
+    { name = "tox", specifier = ">=4.11.4" },
+]
+docs = [
+    { name = "mike", specifier = ">=2" },
+    { name = "mkdocs-git-committers-plugin-2", marker = "python_full_version >= '3.9' and python_full_version < '4'", specifier = ">=2.4.1" },
+    { name = "mkdocs-git-revision-date-localized-plugin", specifier = ">=1.2.4" },
+    { name = "mkdocs-jupyter", specifier = ">=0.24.3" },
+    { name = "mkdocs-material", extras = ["imaging"], specifier = ">=9.7" },
+    { name = "mkdocstrings", specifier = ">=0.25.2,<0.31" },
+    { name = "mkdocstrings-python", specifier = ">=1.10.9,<2" },
+]
+service = [
+    { name = "av", marker = "python_full_version >= '3.10'", specifier = ">=12" },
+    { name = "fastapi", extras = ["standard"], marker = "python_full_version >= '3.10'", specifier = ">=0.115" },
+    { name = "imageio-ffmpeg", marker = "python_full_version >= '3.10'", specifier = ">=0.5" },
+    { name = "jsonargparse", extras = ["signatures"], marker = "python_full_version >= '3.10'" },
+    { name = "torch", marker = "(python_full_version >= '3.10' and sys_platform == 'linux') or (python_full_version >= '3.10' and sys_platform == 'win32')", specifier = "==2.13.0+cu130", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torch", marker = "python_full_version >= '3.10' and sys_platform != 'linux' and sys_platform != 'win32'", specifier = "==2.13.0" },
+    { name = "torchvision", marker = "(python_full_version >= '3.10' and sys_platform == 'linux') or (python_full_version >= '3.10' and sys_platform == 'win32')", specifier = "==0.28.0+cu130", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torchvision", marker = "python_full_version >= '3.10' and sys_platform != 'linux' and sys_platform != 'win32'", specifier = "==0.28.0" },
+    { name = "ultralytics", marker = "python_full_version >= '3.10'", specifier = ">=8.4" },
 ]
 
 [[package]]
@@ -2749,7 +2799,7 @@ requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.0" },
     { name = "imageio-ffmpeg", specifier = ">=0.5" },
     { name = "jsonargparse", extras = ["signatures"] },
-    { name = "supervision" },
+    { name = "supervision", editable = "../../" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "==2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "==2.13.0+cu130", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "==0.28.0" },

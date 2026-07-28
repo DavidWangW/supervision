@@ -309,10 +309,18 @@ class TrafficFrameAnalyzer:
         self.latest_environment: EnvironmentResult | None = None
         self._env_features_ema: SceneFeatures | None = None
 
+        # The live-stream pipeline keeps the fully annotated frame produced by
+        # :meth:`process` (boxes drawn on the exact frame they were computed
+        # from) and republishes it, so detections stay aligned with the vehicles
+        # instead of lagging behind on re-annotation of newer frames.
+
     def draw_lanes(self, scene: np.ndarray) -> np.ndarray:
         """Draw lane polygons and labels onto ``scene`` (in place safe copy)."""
         for lane_id in range(self.lane_count):
-            poly = np.array(self.lane_polygons[lane_id], dtype=np.int32)
+            # OpenCV expects the polygon points as a 3-D ``(N, 1, 2)`` array on
+            # some builds (e.g. OpenCV 4.x); the 2-D ``(N, 2)`` form raises
+            # "Both input arrays must be (arrays of) 3-dimensional vectors".
+            poly = np.array(self.lane_polygons[lane_id], dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(
                 scene,
                 [poly],
@@ -394,7 +402,15 @@ class TrafficFrameAnalyzer:
         minute_bucket = int(t_sec // 60)
 
         # Phase 4: recognize weather / road / visibility from the raw frame.
-        env_dict = self._update_environment(frame)
+        # The scene classifier is comparatively expensive, so we only run it
+        # every few frames and reuse the (already-smoothed) last reading in
+        # between. This raises the effective annotation rate, which makes the
+        # live boxes track vehicles more smoothly without changing the
+        # environment estimate meaningfully.
+        if self.latest_environment is None or (fi % 6 == 0):
+            env_dict = self._update_environment(frame)
+        else:
+            env_dict = self.latest_environment.to_dict()
 
         detections = sv.Detections.from_ultralytics(result)
         if detections.class_id is not None:
@@ -521,11 +537,17 @@ class TrafficFrameAnalyzer:
             for tid in detections.tracker_id
         ]
         annotated = self.draw_lanes(frame.copy())
-        annotated = self._trace.annotate(scene=annotated, detections=detections)
         annotated = self._box.annotate(scene=annotated, detections=detections)
         annotated = self._label.annotate(
             scene=annotated, detections=detections, labels=labels
         )
+        # Draw the motion trace last and never let it drop the whole frame: a
+        # single failing annotator (e.g. an OpenCV version mismatch) must not
+        # prevent the annotated preview from being published.
+        try:
+            annotated = self._trace.annotate(scene=annotated, detections=detections)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Trace annotation failed for stream frame: %s", exc)
 
         snapshot = LiveSnapshot(
             frame_index=fi,
