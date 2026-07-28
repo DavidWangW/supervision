@@ -318,6 +318,10 @@ def _row_to_environment(row: sqlite3.Row) -> dict[str, Any]:
     """Convert an ``environment_readings`` row into a JSON-friendly dict."""
     import json
 
+    try:
+        details = json.loads(row["details_json"]) if row["details_json"] else None
+    except (json.JSONDecodeError, TypeError):
+        details = None
     item = {
         "id": row["id"],
         "observed_at": row["observed_at"],
@@ -326,11 +330,12 @@ def _row_to_environment(row: sqlite3.Row) -> dict[str, Any]:
         "visibility": row["visibility"],
         "source": row["source"],
         "model": row["model"],
+        # Surface the VLM-only dimensions (stored inside ``details_json``) at the
+        # top level so the UI can read them without drilling into ``details``.
+        "traffic_condition": details.get("traffic_condition") if details else None,
+        "description": details.get("description") if details else None,
+        "details": details,
     }
-    try:
-        item["details"] = json.loads(row["details_json"]) if row["details_json"] else None
-    except (json.JSONDecodeError, TypeError):
-        item["details"] = None
     return item
 
 

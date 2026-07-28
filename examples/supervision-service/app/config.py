@@ -88,13 +88,29 @@ VLM_BASE_URL = os.environ.get("SV_VLM_BASE_URL", "http://2.0.0.1:1234/v1").strip
 # Local LMStudio credential, baked in for convenience so the service runs out
 # of the box. Override with the SV_VLM_API_KEY env var for other deployments;
 # an empty value means no Authorization header is sent.
-VLM_API_KEY = os.environ.get("SV_VLM_API_KEY", "sk-lm-nQyPRt6h:3vXnES82Zx7D7tGpU4LC").strip()
-VLM_MODEL = os.environ.get("SV_VLM_MODEL", "gemma-4-e4b-it").strip() # gemma-4-e4b-it gemma-4-26b-a4b-it
+VLM_API_KEY = os.environ.get(
+    "SV_VLM_API_KEY", "sk-lm-nQyPRt6h:3vXnES82Zx7D7tGpU4LC"
+).strip()
+# gemma-4-e4b-it (or gemma-4-26b-a4b-it) — local LMStudio vision model.
+VLM_MODEL = os.environ.get("SV_VLM_MODEL", "gemma-4-e4b-it").strip()
 # Per-request timeout (seconds). Warm calls answer in ~9-11 s locally, but a
 # cold-loaded model can take a minute or more, so leave generous headroom.
 VLM_TIMEOUT = float(os.environ.get("SV_VLM_TIMEOUT", "300"))
 # Minimum spacing between background VLM samples in the video pipelines.
 VLM_INTERVAL_SEC = float(os.environ.get("SV_VLM_INTERVAL_SEC", "20"))
+# Editable instruction prompt for the VLM scene classifier. Operators can tune
+# the wording / label guidance here without touching code; the classifier reads
+# this file on every request (cached by mtime) and injects the label vocabularies
+# from the constants above. Override with ``SV_VLM_PROMPT_FILE``.
+VLM_PROMPT_FILE = os.environ.get(
+    "SV_VLM_PROMPT_FILE", str(APP_DIR / "prompts" / "vlm_environment.txt")
+)
 
-for directory in (UPLOAD_DIR, PREVIEW_DIR, OUTPUT_DIR, MODELS_DIR, DATA_DIR, SERVER_VIDEOS_DIR):
+for directory in (
+    UPLOAD_DIR, PREVIEW_DIR, OUTPUT_DIR, MODELS_DIR, DATA_DIR, SERVER_VIDEOS_DIR
+):
     directory.mkdir(parents=True, exist_ok=True)
+
+# Ensure the editable prompt directory exists so the bundled default prompt can
+# be written/served even on a fresh checkout.
+(APP_DIR / "prompts").mkdir(parents=True, exist_ok=True)

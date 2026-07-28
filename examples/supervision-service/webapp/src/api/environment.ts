@@ -6,6 +6,8 @@ export interface EnvProb {
   visibility: string
   visibility_probs: Record<string, number>
   is_night: boolean
+  traffic_condition?: string
+  description?: string
   model: string
   features: {
     brightness: number

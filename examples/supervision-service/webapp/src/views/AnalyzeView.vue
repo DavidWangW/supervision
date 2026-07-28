@@ -228,6 +228,10 @@ async function loadAnalytics(upload: string) {
   tracks.value = t
   risks.value = r
   environment.value = env
+  // Mirror the model's recognized environment into the manual override
+  // selectors so the page reflects what was actually detected (the user can
+  // still adjust them before re-running).
+  adoptEnvironment(env)
 }
 
 function frameUrlToDataUrl(url: string): Promise<string> {

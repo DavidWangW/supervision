@@ -47,6 +47,11 @@ const displayModel = computed(() => {
       <span class="prob-val">{{ (p.value * 100).toFixed(0) }}%</span>
     </div>
 
+    <div class="env-dim-row">
+      <span class="env-tag">交通</span><strong>{{ env.traffic_condition || '—' }}</strong>
+    </div>
+
+    <p v-if="env.description" class="env-desc">{{ env.description }}</p>
     <p v-if="env.is_night" class="env-night">夜间场景</p>
     <p class="env-model">识别模型：{{ displayModel }}</p>
   </div>
@@ -115,6 +120,13 @@ const displayModel = computed(() => {
   margin: 0.35rem 0 0;
   font-size: 0.78rem;
   color: var(--marking);
+}
+
+.env-desc {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.4;
 }
 
 .env-model {

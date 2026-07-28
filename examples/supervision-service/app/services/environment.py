@@ -6,6 +6,7 @@ of a traffic scene directly from video frames:
 * ``weather``      - 晴 / 多云 / 雨 / 雪 / 雾
 * ``road_condition`` - 干燥 / 潮湿 / 积水 / 积雪 / 结冰
 * ``visibility``   - 好 / 中 / 差
+* ``traffic_condition`` - 畅通 / 缓行 / 拥堵 / 严重拥堵
 
 Because the dedicated recognition model is not trained yet (it will later use a
 fine-tuned classifier, possibly reusing the ``yolo26x`` detection backbone), the
@@ -29,6 +30,7 @@ import numpy as np
 WEATHER_LABELS = ["晴", "多云", "雨", "雪", "雾"]
 ROAD_LABELS = ["干燥", "潮湿", "积水", "积雪", "结冰"]
 VISIBILITY_LABELS = ["好", "中", "差"]
+TRAFFIC_LABELS = ["畅通", "缓行", "拥堵", "严重拥堵"]
 
 #: Identifier stored alongside each reading so a future model swap is auditable.
 DEFAULT_MODEL = "heuristic-v1"
@@ -59,6 +61,9 @@ class EnvironmentResult:
     visibility_probs: dict[str, float]
     is_night: bool
     features: SceneFeatures
+    traffic_condition: str
+    traffic_probs: dict[str, float]
+    description: str = ""
     model: str = DEFAULT_MODEL
 
     def to_dict(self) -> dict:
@@ -200,6 +205,12 @@ class SceneClassifier:
             visibility_probs=_softmax(visibility_scores),
             is_night=f.is_night,
             features=f,
+            # The heuristic has no vehicle-density signal, so it reports the
+            # neutral "畅通" label with a degenerate distribution and leaves the
+            # scene description to the VLM backend.
+            traffic_condition="畅通",
+            traffic_probs={label: (1.0 if label == "畅通" else 0.0) for label in TRAFFIC_LABELS},
+            description="",
             model=self.model,
         )
 
@@ -250,5 +261,6 @@ def create_scene_classifier(backend: str | None = None):
             api_key=config.VLM_API_KEY,
             model=config.VLM_MODEL,
             timeout=config.VLM_TIMEOUT,
+            prompt_file=config.VLM_PROMPT_FILE,
         )
     return SceneClassifier()

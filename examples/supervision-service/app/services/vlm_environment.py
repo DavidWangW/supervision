@@ -27,12 +27,14 @@ import json
 import logging
 import re
 import urllib.request
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from app.services.environment import (
     ROAD_LABELS,
+    TRAFFIC_LABELS,
     VISIBILITY_LABELS,
     WEATHER_LABELS,
     EnvironmentResult,
@@ -48,11 +50,17 @@ DEFAULT_MAX_SIDE = 512
 
 _JSON_BLOB_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-_PROMPT = (
+#: Built-in fallback prompt, used only when the editable prompt file
+#: (``app.config.VLM_PROMPT_FILE``) cannot be read. Labels are inlined so this
+#: string is self-sufficient; the file version uses ``__*_OPTIONS__``
+#: placeholders that are filled from the shared vocabulary constants.
+DEFAULT_VLM_PROMPT = (
     "你是高速公路监控环境识别助手。请观察图片,只输出JSON,"
     '格式: {"weather": "晴|多云|雨|雪|雾", '
     '"road_condition": "干燥|潮湿|积水|积雪|结冰", '
-    '"visibility": "好|中|差", "is_night": true/false, '
+    '"visibility": "好|中|差", '
+    '"traffic_condition": "畅通|缓行|拥堵|严重拥堵", '
+    '"is_night": true/false, '
     '"description": "一句话描述"}'
 )
 
@@ -99,6 +107,7 @@ class VLMSceneClassifier:
         # yields an empty visible answer — hence the generous default.
         max_tokens: int = 2048,
         max_side: int = DEFAULT_MAX_SIDE,
+        prompt_file: str | Path | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -110,11 +119,48 @@ class VLMSceneClassifier:
         self.max_tokens = max_tokens
         self.max_side = max_side
         self._feature_extractor = SceneClassifier()
+        # Editable instruction prompt (re-read from disk on each request, cached
+        # by mtime) so operators can tune recognition wording without a restart.
+        self.prompt_file = Path(prompt_file) if prompt_file else None
+        self._prompt_cache: tuple[float, str] | None = None
+        self._prompt = self._load_prompt()
         # Bypass any system proxy: the endpoint is a LAN/localhost service and
         # proxied requests were observed to fail with opaque 502 responses.
         self._opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({})
         )
+
+    # -- prompt loading -------------------------------------------------------
+    def _inject_labels(self, text: str) -> str:
+        """Fill the ``__*_OPTIONS__`` placeholders with the shared vocabularies."""
+        return (
+            text.replace("__WEATHER_OPTIONS__", "、".join(WEATHER_LABELS))
+            .replace("__ROAD_OPTIONS__", "、".join(ROAD_LABELS))
+            .replace("__VISIBILITY_OPTIONS__", "、".join(VISIBILITY_LABELS))
+            .replace("__TRAFFIC_OPTIONS__", "、".join(TRAFFIC_LABELS))
+        )
+
+    def _load_prompt(self) -> str:
+        """Return the instruction prompt, preferring the editable config file.
+
+        The configured file (``prompt_file``) is re-read on every call but
+        cached by its modification time, so editing the file takes effect on
+        the next request without restarting the service. Falls back to the
+        built-in :data:`DEFAULT_VLM_PROMPT` when the file is missing/unreadable.
+        """
+        raw: str | None = None
+        if self.prompt_file is not None:
+            try:
+                mtime = self.prompt_file.stat().st_mtime
+                if self._prompt_cache is not None and self._prompt_cache[0] == mtime:
+                    return self._prompt_cache[1]
+                raw = self.prompt_file.read_text(encoding="utf-8")
+                self._prompt_cache = (mtime, raw)
+            except OSError as exc:
+                logger.warning("读取 VLM 提示词文件失败,回退内置默认提示词: %s", exc)
+        if raw is None:
+            raw = DEFAULT_VLM_PROMPT
+        return self._inject_labels(raw)
 
     # -- frame encoding -------------------------------------------------------
     def _encode_frame(self, frame: np.ndarray) -> str:
@@ -141,7 +187,7 @@ class VLMSceneClassifier:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": _PROMPT},
+                        {"type": "text", "text": self._prompt},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -196,12 +242,15 @@ class VLMSceneClassifier:
         weather = parsed.get("weather")
         road = parsed.get("road_condition")
         visibility = parsed.get("visibility")
+        traffic = parsed.get("traffic_condition")
         if weather not in WEATHER_LABELS:
             raise ValueError(f"天气标签越界: {weather!r}")
         if road not in ROAD_LABELS:
             raise ValueError(f"路面标签越界: {road!r}")
         if visibility not in VISIBILITY_LABELS:
             raise ValueError(f"能见度标签越界: {visibility!r}")
+        if traffic not in TRAFFIC_LABELS:
+            raise ValueError(f"交通状况标签越界: {traffic!r}")
         return parsed
 
     # -- public API -----------------------------------------------------------
@@ -229,6 +278,8 @@ class VLMSceneClassifier:
         content = self._request(self._encode_frame(frame))
         parsed = self._parse_labels(content)
         is_night = parsed.get("is_night")
+        # Cap the free-text description so a chatty model cannot bloat the DB row.
+        description = (parsed.get("description") or "")[:200]
         return EnvironmentResult(
             weather=parsed["weather"],
             weather_probs=_one_hot(WEATHER_LABELS, parsed["weather"]),
@@ -238,5 +289,8 @@ class VLMSceneClassifier:
             visibility_probs=_one_hot(VISIBILITY_LABELS, parsed["visibility"]),
             is_night=bool(is_night) if is_night is not None else features.is_night,
             features=features,
+            traffic_condition=parsed["traffic_condition"],
+            traffic_probs=_one_hot(TRAFFIC_LABELS, parsed["traffic_condition"]),
+            description=description,
             model=self.model,
         )

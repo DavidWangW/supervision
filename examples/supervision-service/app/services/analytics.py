@@ -453,6 +453,9 @@ class TrafficFrameAnalyzer:
             visibility_probs=vlm.visibility_probs,
             is_night=heuristic.is_night,
             features=heuristic.features,
+            traffic_condition=vlm.traffic_condition,
+            traffic_probs=vlm.traffic_probs,
+            description=vlm.description,
             model=vlm.model,
         )
 
