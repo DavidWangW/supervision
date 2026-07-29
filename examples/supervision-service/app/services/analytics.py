@@ -326,6 +326,10 @@ class TrafficFrameAnalyzer:
         self._vlm_inflight = False
         self._vlm_last_submit = 0.0
         self._vlm_interval = max(1.0, float(VLM_INTERVAL_SEC))
+        # Viewer-aware gate for the background VLM sampler: the stream worker
+        # flips this off when nobody is watching so the local vision-LLM stays
+        # idle (True by default; only the realtime stream path toggles it).
+        self._vlm_allowed = True
         if ENV_BACKEND in ("vlm", "hybrid"):
             try:
                 self._vlm_classifier = create_scene_classifier("vlm")
@@ -407,7 +411,7 @@ class TrafficFrameAnalyzer:
         least ``VLM_INTERVAL_SEC`` apart, so a slow endpoint can never stall
         or pile up work on the frame loop (the call itself takes ~10 s).
         """
-        if self._vlm_classifier is None or self._vlm_inflight:
+        if not self._vlm_allowed or self._vlm_classifier is None or self._vlm_inflight:
             return
         now = time.monotonic()
         if self._vlm_environment is not None and (

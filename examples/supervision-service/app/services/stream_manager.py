@@ -64,7 +64,7 @@ for _CV2_FN in ("polylines", "fillPoly", "drawContours"):
 
     setattr(cv2, _CV2_FN, _make_cv2_shim(_cv2_orig))
 
-from app.config import DEFAULT_SPEED_WEIGHTS
+from app.config import DEFAULT_SPEED_WEIGHTS, VLM_ONLY_WHEN_VIEWED, VLM_VIEWER_GRACE_SEC
 from app.db.analytics_repository import (
     insert_environment_reading,
     insert_risk_assessments,
@@ -255,6 +255,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
+def _vlm_should_run(runtime: "StreamRuntime") -> bool:
+    """Whether the stream should currently issue VLM environment requests.
+
+    Returns True whenever ``SV_VLM_ONLY_WHEN_VIEWED`` is disabled, or when at
+    least one client is watching, or within the grace period after the last
+    viewer left (to avoid thrashing the model on quick page switches).
+    """
+    if not VLM_ONLY_WHEN_VIEWED:
+        return True
+    with runtime.viewer_lock:
+        viewers = runtime.active_viewers
+        left_at = runtime.last_viewer_left_at
+    if viewers > 0:
+        return True
+    if left_at is not None and (time.monotonic() - left_at) < VLM_VIEWER_GRACE_SEC:
+        return True
+    return False
+
+
 @dataclass
 class StreamRuntime:
     """Live runtime state for a single stream worker."""
@@ -270,6 +289,13 @@ class StreamRuntime:
     fps_actual: float = 0.0
     frames_processed: int = 0
     started_at: str = field(default_factory=_now_iso)
+    # Viewer-aware gating for the (expensive) VLM environment recognition.
+    # ``active_viewers`` counts live preview consumers (WebSocket / MJPEG); the
+    # VLM sampler is suppressed when it drops to zero (plus a grace period) so an
+    # unattended stream does not keep hitting the local vision-LLM.
+    active_viewers: int = 0
+    last_viewer_left_at: float | None = None
+    viewer_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def public_status(self) -> dict:
         return {
@@ -281,6 +307,7 @@ class StreamRuntime:
             "fps_actual": round(self.fps_actual, 1),
             "frames_processed": self.frames_processed,
             "started_at": self.started_at,
+            "active_viewers": self.active_viewers,
             "lane_count": self.record.lane_count,
         }
 
@@ -340,6 +367,31 @@ class StreamManager:
     def is_running(self, stream_id: str) -> bool:
         runtime = self._runtimes.get(stream_id)
         return bool(runtime and runtime.thread and runtime.thread.is_alive())
+
+    def add_viewer(self, stream_id: str) -> bool:
+        """Register a live preview consumer (WebSocket / MJPEG) for a stream.
+
+        Returns False (and does nothing) when the stream is not running, so a
+        viewer that connects to a dead stream does not artificially keep VLM
+        recognition alive.
+        """
+        runtime = self._runtimes.get(stream_id)
+        if runtime is None or not self.is_running(stream_id):
+            return False
+        with runtime.viewer_lock:
+            runtime.active_viewers += 1
+            runtime.last_viewer_left_at = None
+        return True
+
+    def remove_viewer(self, stream_id: str) -> None:
+        """Deregister a preview consumer; arms the VLM idle grace period."""
+        runtime = self._runtimes.get(stream_id)
+        if runtime is None:
+            return
+        with runtime.viewer_lock:
+            runtime.active_viewers = max(0, runtime.active_viewers - 1)
+            if runtime.active_viewers == 0:
+                runtime.last_viewer_left_at = time.monotonic()
 
     def stop_all(self) -> None:
         """Stop every running worker (used on application shutdown)."""
@@ -544,6 +596,11 @@ class StreamManager:
                     lane_count=record.lane_count,
                     confidence_threshold=record.confidence_threshold,
                 )
+
+            # Gate the (expensive) VLM sampler on active viewers so an
+            # unattended stream leaves the local vision-LLM idle. Vehicle
+            # detection / risk scoring keep running regardless of this flag.
+            shared.analyzer._vlm_allowed = _vlm_should_run(runtime)
 
             try:
                 result = model(

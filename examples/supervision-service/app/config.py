@@ -106,6 +106,20 @@ VLM_PROMPT_FILE = os.environ.get(
     "SV_VLM_PROMPT_FILE", str(APP_DIR / "prompts" / "vlm_environment.txt")
 )
 
+# --- VLM request gating (viewer-aware) ----------------------------------
+# When True, the (expensive) VLM environment recognition is only issued while
+# at least one client is actively watching the stream (WebSocket / MJPEG). An
+# unattended stream therefore does not keep hammering the local vision-LLM.
+# Offline file analysis is unaffected (it always runs to completion). Set
+# SV_VLM_ONLY_WHEN_VIEWED=false to restore the old always-on behavior.
+VLM_ONLY_WHEN_VIEWED = (
+    os.environ.get("SV_VLM_ONLY_WHEN_VIEWED", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+# After the last viewer leaves, keep issuing VLM samples for this many seconds
+# so a quick page / stream switch does not thrash the model with stop-start cycles.
+VLM_VIEWER_GRACE_SEC = float(os.environ.get("SV_VLM_VIEWER_GRACE_SEC", "30"))
+
 for directory in (
     UPLOAD_DIR, PREVIEW_DIR, OUTPUT_DIR, MODELS_DIR, DATA_DIR, SERVER_VIDEOS_DIR
 ):

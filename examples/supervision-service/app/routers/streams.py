@@ -177,22 +177,29 @@ def stream_mjpeg(stream_id: str) -> StreamingResponse:
     boundary = "frame"
 
     async def frames():
-        # Push a frame as soon as the worker publishes a new one (tracked by
-        # ``frame_seq``). A fixed-interval sleep would beat against the actual
-        # frame production rate and cause duplicated/skipped frames, which the
-        # browser renders as visible stutter.
-        last_seq = -1
-        while stream_manager.is_running(stream_id):
-            seq = runtime.frame_seq
-            jpeg = runtime.latest_jpeg
-            if jpeg is not None and seq != last_seq:
-                last_seq = seq
-                yield (
-                    b"--" + boundary.encode() + b"\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-                )
-            else:
-                await asyncio.sleep(0.01)
+        # A connected MJPEG consumer is also an active viewer, so register it
+        # (see the WebSocket handler) to keep VLM recognition alive while the
+        # stream is being watched; unregister on disconnect.
+        stream_manager.add_viewer(stream_id)
+        try:
+            # Push a frame as soon as the worker publishes a new one (tracked by
+            # ``frame_seq``). A fixed-interval sleep would beat against the actual
+            # frame production rate and cause duplicated/skipped frames, which the
+            # browser renders as visible stutter.
+            last_seq = -1
+            while stream_manager.is_running(stream_id):
+                seq = runtime.frame_seq
+                jpeg = runtime.latest_jpeg
+                if jpeg is not None and seq != last_seq:
+                    last_seq = seq
+                    yield (
+                        b"--" + boundary.encode() + b"\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                    )
+                else:
+                    await asyncio.sleep(0.01)
+        finally:
+            stream_manager.remove_viewer(stream_id)
 
     return StreamingResponse(
         frames(),
@@ -202,13 +209,20 @@ def stream_mjpeg(stream_id: str) -> StreamingResponse:
 
 @router.websocket("/{stream_id}/ws")
 async def stream_ws(websocket: WebSocket, stream_id: str) -> None:
-    """Push live metric snapshots to the dashboard over a WebSocket."""
+    """Push live metric snapshots to the dashboard over a WebSocket.
+
+    Opening a socket registers the client as an active viewer of the stream,
+    which (when ``SV_VLM_ONLY_WHEN_VIEWED`` is on) keeps the VLM environment
+    recognition running while someone is watching and lets it idle when the
+    last viewer disconnects.
+    """
     await websocket.accept()
     runtime = stream_manager.get(stream_id)
     if runtime is None:
         await websocket.send_json({"type": "error", "detail": "该视频流未在运行。"})
         await websocket.close()
         return
+    stream_manager.add_viewer(stream_id)
     try:
         while True:
             if not stream_manager.is_running(stream_id):
@@ -226,3 +240,5 @@ async def stream_ws(websocket: WebSocket, stream_id: str) -> None:
         return
     except Exception:  # pragma: no cover - transport guard
         return
+    finally:
+        stream_manager.remove_viewer(stream_id)
