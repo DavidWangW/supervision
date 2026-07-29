@@ -196,6 +196,7 @@ def stream_mjpeg(stream_id: str) -> StreamingResponse:
                         b"--" + boundary.encode() + b"\r\n"
                         b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                     )
+                    stream_manager.mark_viewer_heartbeat(stream_id)
                 else:
                     await asyncio.sleep(0.01)
         finally:
@@ -235,6 +236,7 @@ async def stream_ws(websocket: WebSocket, stream_id: str) -> None:
                 "snapshot": runtime.latest_snapshot,
             }
             await websocket.send_json(payload)
+            stream_manager.mark_viewer_heartbeat(stream_id)
             await asyncio.sleep(0.4)
     except WebSocketDisconnect:
         return

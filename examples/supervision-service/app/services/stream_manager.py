@@ -64,7 +64,11 @@ for _CV2_FN in ("polylines", "fillPoly", "drawContours"):
 
     setattr(cv2, _CV2_FN, _make_cv2_shim(_cv2_orig))
 
-from app.config import DEFAULT_SPEED_WEIGHTS, VLM_ONLY_WHEN_VIEWED, VLM_VIEWER_GRACE_SEC
+from app.config import (
+    DEFAULT_SPEED_WEIGHTS,
+    VLM_ONLY_WHEN_VIEWED,
+    VLM_VIEWER_HEARTBEAT_SEC,
+)
 from app.db.analytics_repository import (
     insert_environment_reading,
     insert_risk_assessments,
@@ -258,20 +262,19 @@ def _now_iso() -> str:
 def _vlm_should_run(runtime: "StreamRuntime") -> bool:
     """Whether the stream should currently issue VLM environment requests.
 
-    Returns True whenever ``SV_VLM_ONLY_WHEN_VIEWED`` is disabled, or when at
-    least one client is watching, or within the grace period after the last
-    viewer left (to avoid thrashing the model on quick page switches).
+    Returns True whenever ``SV_VLM_ONLY_WHEN_VIEWED`` is disabled, or when a
+    client has received live traffic (WebSocket snapshot / MJPEG frame) within
+    ``VLM_VIEWER_HEARTBEAT_SEC``. Gating on this *heartbeat* (the last
+    successful push) instead of a viewer reference count is self-healing: a
+    leaked or stuck viewer connection that no longer pulls frames cannot keep
+    the local vision-LLM spinning, so an unattended stream idles within one
+    interval rather than requesting VLM forever.
     """
     if not VLM_ONLY_WHEN_VIEWED:
         return True
     with runtime.viewer_lock:
-        viewers = runtime.active_viewers
-        left_at = runtime.last_viewer_left_at
-    if viewers > 0:
-        return True
-    if left_at is not None and (time.monotonic() - left_at) < VLM_VIEWER_GRACE_SEC:
-        return True
-    return False
+        last_beat = runtime.last_viewer_heartbeat
+    return (time.monotonic() - last_beat) < VLM_VIEWER_HEARTBEAT_SEC
 
 
 @dataclass
@@ -295,6 +298,10 @@ class StreamRuntime:
     # unattended stream does not keep hitting the local vision-LLM.
     active_viewers: int = 0
     last_viewer_left_at: float | None = None
+    # Last time a live consumer (WebSocket / MJPEG) actually received a frame /
+    # snapshot. The VLM sampler is gated on this heartbeat so a leaked viewer
+    # connection cannot keep the local vision-LLM spinning (see _vlm_should_run).
+    last_viewer_heartbeat: float = field(default_factory=time.monotonic)
     viewer_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def public_status(self) -> dict:
@@ -359,6 +366,9 @@ class StreamManager:
         runtime.stop_event.set()
         if runtime.thread and runtime.thread.is_alive():
             runtime.thread.join(timeout=timeout)
+        # Drop the viewer heartbeat so a stopped stream never issues VLM.
+        with runtime.viewer_lock:
+            runtime.last_viewer_heartbeat = 0.0
         return True
 
     def get(self, stream_id: str) -> StreamRuntime | None:
@@ -392,6 +402,22 @@ class StreamManager:
             runtime.active_viewers = max(0, runtime.active_viewers - 1)
             if runtime.active_viewers == 0:
                 runtime.last_viewer_left_at = time.monotonic()
+
+    def mark_viewer_heartbeat(self, stream_id: str) -> None:
+        """Record that a viewer just received live traffic for ``stream_id``.
+
+        Called by the WebSocket / MJPEG push loops on every successful frame so
+        :func:`_vlm_should_run` can gate the VLM sampler on *recent activity*
+        rather than on a reference count. This makes the gate self-healing: a
+        viewer connection that leaks (e.g. a tab closed without firing the
+        disconnect handler) stops refreshing the heartbeat, and the VLM sampler
+        idles within one ``VLM_VIEWER_HEARTBEAT_SEC`` interval.
+        """
+        runtime = self._runtimes.get(stream_id)
+        if runtime is None:
+            return
+        with runtime.viewer_lock:
+            runtime.last_viewer_heartbeat = time.monotonic()
 
     def stop_all(self) -> None:
         """Stop every running worker (used on application shutdown)."""

@@ -201,6 +201,10 @@ class LiveSnapshot:
     lanes: list[LaneLiveMetric] = field(default_factory=list)
     risk: dict | None = None
     environment: dict | None = None
+    # Whether the (expensive) VLM environment recognition is currently active.
+    # False means the viewer-aware gate suppressed it (nobody watching the
+    # stream). In pure-heuristic mode there is no VLM to pause, so it stays True.
+    vlm_active: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -222,6 +226,7 @@ class LiveSnapshot:
             ],
             "risk": self.risk,
             "environment": self.environment,
+            "vlm_active": self.vlm_active,
         }
 
 
@@ -404,6 +409,16 @@ class TrafficFrameAnalyzer:
         return prev * (1.0 - alpha) + new * alpha
 
     # -- VLM background sampling ---------------------------------------------
+    def _vlm_active_flag(self) -> bool:
+        """Whether the VLM environment recognition is currently active.
+
+        Returns ``False`` when the viewer-aware gate has suppressed it (nobody
+        is watching the stream). In pure-heuristic mode there is no VLM to
+        pause, so it always returns ``True`` (the dashboard then shows no
+        spurious "paused" notice).
+        """
+        return self._vlm_allowed if self._vlm_classifier is not None else True
+
     def _maybe_submit_vlm(self, frame: np.ndarray) -> None:
         """Kick off a background VLM classification if one is due.
 
@@ -460,6 +475,8 @@ class TrafficFrameAnalyzer:
             traffic_condition=vlm.traffic_condition,
             traffic_probs=vlm.traffic_probs,
             description=vlm.description,
+            has_accident=vlm.has_accident,
+            accident_desc=vlm.accident_desc,
             model=vlm.model,
         )
 
@@ -542,6 +559,11 @@ class TrafficFrameAnalyzer:
         t_sec = fi / self.fps
         minute_bucket = int(t_sec // 60)
 
+        # Surface the viewer-aware VLM gate in the snapshot so the dashboard can
+        # show a "paused" notice when nobody is watching. In pure-heuristic mode
+        # there is no VLM to pause, so we always report active (no false notice).
+        vlm_active = self._vlm_active_flag()
+
         # Phase 4: recognize weather / road / visibility from the raw frame.
         # The scene classifier is comparatively expensive, so we only run it
         # every few frames and reuse the (already-smoothed) last reading in
@@ -571,6 +593,7 @@ class TrafficFrameAnalyzer:
                 total_vehicles=0,
                 lanes=lane_live,
                 environment=env_dict,
+                vlm_active=vlm_active,
             )
 
         # --- Speed (bird's-eye y displacement over time) ---
@@ -697,6 +720,7 @@ class TrafficFrameAnalyzer:
             total_vehicles=total_vehicles,
             lanes=lane_live,
             environment=env_dict,
+            vlm_active=vlm_active,
         )
         return annotated, snapshot
 

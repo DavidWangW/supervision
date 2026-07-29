@@ -14,7 +14,7 @@ function probList(probs: Record<string, number> | null | undefined) {
 // fallback path stays distinguishable.
 const displayModel = computed(() => {
   const model = props.env?.model ?? ''
-  return model.startsWith('vlm:') ? 'IntelliVisionEnv v0.1' : model
+  return model.startsWith('vlm:') ? 'IntelliVisionEnv' : model
 })
 </script>
 
@@ -51,7 +51,12 @@ const displayModel = computed(() => {
       <span class="env-tag">交通</span><strong>{{ env.traffic_condition || '—' }}</strong>
     </div>
 
-    <p v-if="env.description" class="env-desc">{{ env.description }}</p>
+    <p class="env-desc">
+      <span v-if="env.description">{{ env.description }}</span><span
+        v-if="env.has_accident && env.accident_desc"
+        class="env-accident"
+      >⚠ 交通事故：{{ env.accident_desc }}</span>
+    </p>
     <p v-if="env.is_night" class="env-night">夜间场景</p>
     <p class="env-model">识别模型：{{ displayModel }}</p>
   </div>
@@ -126,7 +131,19 @@ const displayModel = computed(() => {
   margin: 0.35rem 0 0;
   font-size: 0.78rem;
   color: var(--text);
-  line-height: 1.4;
+  line-height: 1.5;
+}
+
+.env-accident {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  background: rgba(255, 77, 79, 0.12);
+  border: 1px solid rgba(255, 77, 79, 0.5);
+  color: #ff6b6b;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: normal;
 }
 
 .env-model {

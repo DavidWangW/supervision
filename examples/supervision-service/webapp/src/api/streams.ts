@@ -78,6 +78,7 @@ export interface LiveSnapshot {
   environment?: EnvProb | null
   weather?: string | null
   road_condition?: string | null
+  vlm_active?: boolean | null
 }
 
 export async function fetchPreviewFrame(url: string): Promise<PreviewFrame> {

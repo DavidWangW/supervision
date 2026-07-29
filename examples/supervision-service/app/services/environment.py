@@ -64,6 +64,13 @@ class EnvironmentResult:
     traffic_condition: str
     traffic_probs: dict[str, float]
     description: str = ""
+    # Whether the frame clearly shows a traffic accident (交通肇事). Only set to
+    # True when the evidence is unambiguous; uncertain frames stay False so the
+    # dashboard never surfaces a speculative accident notice. ``accident_desc``
+    # carries a short human-readable summary but is left empty unless
+    # ``has_accident`` is True.
+    has_accident: bool = False
+    accident_desc: str = ""
     model: str = DEFAULT_MODEL
 
     def to_dict(self) -> dict:

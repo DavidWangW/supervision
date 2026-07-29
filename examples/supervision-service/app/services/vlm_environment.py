@@ -61,6 +61,8 @@ DEFAULT_VLM_PROMPT = (
     '"visibility": "好|中|差", '
     '"traffic_condition": "畅通|缓行|拥堵|严重拥堵", '
     '"is_night": true/false, '
+    '"has_accident": true/false, '
+    '"accident_desc": "若画面明确显示交通事故(如追尾/碰撞/侧翻/占用车道/救援),简述事故类型与影响;不确定或无明显事故时留空", '
     '"description": "一句话描述"}'
 )
 
@@ -68,6 +70,22 @@ DEFAULT_VLM_PROMPT = (
 def _one_hot(labels: list[str], chosen: str) -> dict[str, float]:
     """Build a degenerate probability distribution for a single chosen label."""
     return {label: (1.0 if label == chosen else 0.0) for label in labels}
+
+
+def _as_bool(value: object) -> bool:
+    """Coerce a model-provided value into a strict boolean.
+
+    VLMs frequently emit the JSON boolean as a string (``"true"`` / ``"false"``)
+    or Chinese words (``"是"`` / ``"否"``). Only an explicit, unambiguous *true*
+    signal returns ``True``; everything else (including ``None`` and any
+    non-affirmative string) is treated as ``False`` so an uncertain frame never
+    surfaces a speculative accident notice.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "是", "yes", "有")
+    return bool(value)
 
 
 class VLMSceneClassifier:
@@ -280,6 +298,13 @@ class VLMSceneClassifier:
         is_night = parsed.get("is_night")
         # Cap the free-text description so a chatty model cannot bloat the DB row.
         description = (parsed.get("description") or "")[:200]
+        # Only describe a traffic accident when the model is *certain* one is
+        # present. An ambiguous / missing signal is forced to False with an empty
+        # summary, so the dashboard never shows a speculative accident notice.
+        has_accident = _as_bool(parsed.get("has_accident", False))
+        accident_desc = (
+            (parsed.get("accident_desc") or "")[:200] if has_accident else ""
+        )
         return EnvironmentResult(
             weather=parsed["weather"],
             weather_probs=_one_hot(WEATHER_LABELS, parsed["weather"]),
@@ -292,5 +317,7 @@ class VLMSceneClassifier:
             traffic_condition=parsed["traffic_condition"],
             traffic_probs=_one_hot(TRAFFIC_LABELS, parsed["traffic_condition"]),
             description=description,
+            has_accident=has_accident,
+            accident_desc=accident_desc,
             model=self.model,
         )

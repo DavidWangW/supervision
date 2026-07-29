@@ -8,6 +8,10 @@ export interface EnvProb {
   is_night: boolean
   traffic_condition?: string
   description?: string
+  // Whether the frame clearly shows a traffic accident. Only true when the
+  // evidence is unambiguous; uncertain frames stay false (and accident_desc empty).
+  has_accident?: boolean | null
+  accident_desc?: string | null
   model: string
   features: {
     brightness: number

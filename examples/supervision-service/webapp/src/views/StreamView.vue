@@ -59,6 +59,11 @@ const liveRisk = computed<LiveRisk | null>(() => liveSnapshot.value?.risk ?? nul
 const liveOverall = computed(() => liveRisk.value?.overall ?? null)
 const liveLaneRisks = computed(() => liveRisk.value?.lanes ?? [])
 const liveEnv = computed<EnvProb | null>(() => liveSnapshot.value?.environment ?? null)
+const liveVlmActive = computed<boolean>(() => liveSnapshot.value?.vlm_active ?? true)
+const liveEnvModel = computed<string>(() => {
+  const model = liveEnv.value?.model ?? ''
+  return model.startsWith('vlm:') ? 'IntelliVisionEnv' : model
+})
 
 const liveMjpegSrc = computed(() =>
   liveStreamId.value && isLiveRunning.value ? streamMjpegUrl(liveStreamId.value) : '',
@@ -585,8 +590,11 @@ onBeforeUnmount(() => {
             <div v-if="liveEnv" class="panel env-live">
               <header class="panel-head">
                 <h3>环境识别（实时）</h3>
-                <span class="muted">{{ liveEnv.model }}</span>
+                <span class="muted">{{ liveEnvModel }}</span>
               </header>
+              <p v-if="!liveVlmActive" class="env-paused-hint">
+                IntelliVisionEnv环境识别已暂停
+              </p>
               <EnvBars :env="liveEnv" />
             </div>
 
@@ -768,6 +776,18 @@ onBeforeUnmount(() => {
   margin-top: 0.75rem;
   display: grid;
   gap: 0.5rem;
+}
+
+.env-paused-hint {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  background: rgba(232, 163, 61, 0.12);
+  border: 1px solid rgba(232, 163, 61, 0.4);
+  color: #e8a33d;
+  font-size: 0.78rem;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.02em;
 }
 
 .stats {
